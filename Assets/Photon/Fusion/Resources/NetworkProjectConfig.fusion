@@ -12,7 +12,7 @@
     "InvokeRenderInBatchMode": true,
     "NetworkIdIsObjectName": false,
     "HideNetworkObjectInactivityGuard": false,
-    "AllowClientServerModesInWebGL": false,
+    "AllowClientServerModesInWebGL": true,
     "ClientsRecordFrameAndPacketTimingTraces": false,
     "Simulation": {
         "InputDataWordCount": 0,
