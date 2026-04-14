@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "unity-mcp": {
+      "type": "stdio",
+      "command": "C:\\Users\\nc271\\.unity\\relay\\relay_win.exe",
+      "args": ["--mcp", "--project-path", "C:/Users/nc271/UnityDocument/GemmaQuiz/Assets"],
+      "env": {}
+    }
+  }
+}
