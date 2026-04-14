@@ -266,7 +266,7 @@ namespace GemmaQuiz.UI
             labelObj.AddComponent<CanvasRenderer>();
             var label = labelObj.AddComponent<Text>();
             label.text = "問題生成AI";
-            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            label.font = JapaneseFont.Get();
             label.fontSize = 24;
             label.color = Color.white;
             label.alignment = TextAnchor.MiddleLeft;

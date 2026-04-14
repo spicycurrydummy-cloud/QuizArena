@@ -354,7 +354,7 @@ namespace GemmaQuiz.UI
                     phText.color = new Color(0.85f, 0.85f, 0.9f, 1f);
                     phText.fontSize = 20;
                     phText.alignment = TextAnchor.MiddleCenter;
-                    phText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                    phText.font = JapaneseFont.Get();
                 }
             }
 
@@ -367,7 +367,7 @@ namespace GemmaQuiz.UI
                     t.color = Color.white;
                     t.fontSize = 20;
                     t.alignment = TextAnchor.MiddleCenter;
-                    t.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                    t.font = JapaneseFont.Get();
                 }
             }
 
