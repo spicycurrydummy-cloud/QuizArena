@@ -612,6 +612,7 @@ GameObject:
   - component: {fileID: 241765449}
   - component: {fileID: 241765448}
   - component: {fileID: 241765450}
+  - component: {fileID: 241765451}
   m_Layer: 0
   m_Name: SessionNameInput
   m_TagString: Untagged
@@ -746,6 +747,19 @@ MonoBehaviour:
   m_CaretWidth: 1
   m_ReadOnly: 0
   m_ShouldActivateOnSelect: 1
+--- !u!114 &241765451
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 241765446}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cc33a39070010f94fb1c2dd721c1286d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: WebGLInput::WebGLSupport.WebGLInput
+  showHtmlElement: 0
 --- !u!1 &279457856
 GameObject:
   m_ObjectHideFlags: 0
@@ -3585,6 +3599,7 @@ GameObject:
   - component: {fileID: 1943386182}
   - component: {fileID: 1943386181}
   - component: {fileID: 1943386183}
+  - component: {fileID: 1943386184}
   m_Layer: 0
   m_Name: PlayerNameInput
   m_TagString: Untagged
@@ -3719,6 +3734,19 @@ MonoBehaviour:
   m_CaretWidth: 1
   m_ReadOnly: 0
   m_ShouldActivateOnSelect: 1
+--- !u!114 &1943386184
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1943386179}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cc33a39070010f94fb1c2dd721c1286d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: WebGLInput::WebGLSupport.WebGLInput
+  showHtmlElement: 0
 --- !u!1 &2036297630
 GameObject:
   m_ObjectHideFlags: 0
