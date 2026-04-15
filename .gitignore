@@ -83,3 +83,7 @@ Thumbs.db
 
 # Claude local config
 .claude/
+
+# Debug logs
+debug.log
+*.log

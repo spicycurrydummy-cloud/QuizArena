@@ -46,7 +46,7 @@ namespace GemmaQuiz.UI
         private int popupGenreIndex = -1;
 
         // カスタムジャンル入力
-        private InputField customGenreInput;
+        [SerializeField] private InputField customGenreInput;
 
         private static readonly Color selectedColor = new Color(0.3f, 0.7f, 0.4f);
         private static readonly Color deselectedColor = new Color(0.2f, 0.2f, 0.3f);
@@ -62,7 +62,8 @@ namespace GemmaQuiz.UI
                 questionCountPlusButton.onClick.AddListener(() => ChangeQuestionCount(+1));
 
             CreateGenreButtons();
-            CreateCustomGenreInput();
+            if (customGenreInput != null)
+                customGenreInput.onEndEdit.AddListener(OnCustomGenreSubmit);
             UpdateQuestionCountText();
 
             var session = SessionManager.Instance;
@@ -307,78 +308,6 @@ namespace GemmaQuiz.UI
         }
 
         // ===== カスタムジャンル入力 =====
-
-        private void CreateCustomGenreInput()
-        {
-            if (genreButtonContainer == null) return;
-
-            // genreButtonContainer の親（Canvas）にInputFieldを追加
-            var parent = genreButtonContainer.parent;
-            if (parent == null) parent = genreButtonContainer;
-
-            var inputObj = DefaultControls.CreateInputField(new DefaultControls.Resources());
-            inputObj.name = "CustomGenreInput";
-            inputObj.transform.SetParent(parent, false);
-
-            // genreButtonContainerの直後に配置
-            inputObj.transform.SetSiblingIndex(genreButtonContainer.GetSiblingIndex() + 1);
-
-            var inputRect = inputObj.GetComponent<RectTransform>();
-            // SelectedGenreTextの位置を基準に、その下に配置
-            if (selectedGenreText != null)
-            {
-                var selRect = selectedGenreText.GetComponent<RectTransform>();
-                inputRect.anchoredPosition = new Vector2(selRect.anchoredPosition.x, selRect.anchoredPosition.y - 40f);
-            }
-            else
-            {
-                inputRect.anchoredPosition = new Vector2(500, -200);
-            }
-            inputRect.sizeDelta = new Vector2(400, 44);
-
-            var inputImage = inputObj.GetComponent<Image>();
-            if (inputImage != null)
-                inputImage.color = new Color(0.25f, 0.25f, 0.35f, 1f);
-
-            customGenreInput = inputObj.GetComponent<InputField>();
-            customGenreInput.caretColor = Color.white;
-            customGenreInput.selectionColor = new Color(0.4f, 0.4f, 0.6f, 0.8f);
-
-            var placeholder = inputObj.transform.Find("Placeholder");
-            if (placeholder != null)
-            {
-                var phText = placeholder.GetComponent<Text>();
-                if (phText != null)
-                {
-                    phText.text = "カスタムジャンルを入力...";
-                    phText.color = new Color(0.85f, 0.85f, 0.9f, 1f);
-                    phText.fontSize = 20;
-                    phText.alignment = TextAnchor.MiddleCenter;
-                    phText.font = JapaneseFont.Get();
-                }
-            }
-
-            var inputText = inputObj.transform.Find("Text");
-            if (inputText != null)
-            {
-                var t = inputText.GetComponent<Text>();
-                if (t != null)
-                {
-                    t.color = Color.white;
-                    t.fontSize = 20;
-                    t.alignment = TextAnchor.MiddleCenter;
-                    t.font = JapaneseFont.Get();
-                }
-            }
-
-            // InputFieldのtextComponentにも明示的に白色を設定
-            if (customGenreInput.textComponent != null)
-            {
-                customGenreInput.textComponent.color = Color.white;
-            }
-
-            customGenreInput.onEndEdit.AddListener(OnCustomGenreSubmit);
-        }
 
         private void OnCustomGenreSubmit(string text)
         {
