@@ -1991,7 +1991,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 1
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: GemmaQuiz
+  m_Text: QuizArena
 --- !u!222 &1038260991
 CanvasRenderer:
   m_ObjectHideFlags: 0

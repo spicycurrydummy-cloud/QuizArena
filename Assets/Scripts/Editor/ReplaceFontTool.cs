@@ -21,7 +21,8 @@ namespace GemmaQuiz.Editor
             string[] scenePaths = {
                 "Assets/Scenes/TitleScene.unity",
                 "Assets/Scenes/LobbyScene.unity",
-                "Assets/Scenes/QuizScene.unity"
+                "Assets/Scenes/QuizScene.unity",
+                "Assets/Scenes/ResultScene.unity"
             };
 
             int totalUpdated = 0;
