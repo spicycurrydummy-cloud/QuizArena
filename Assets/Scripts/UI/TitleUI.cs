@@ -125,7 +125,7 @@ namespace GemmaQuiz.UI
             SetStatus("ソロテストモードで起動中...");
             browsingLobby = false;
 
-            NetworkManager.Instance.StartHost(sessionName, playerName);
+            NetworkManager.Instance.StartHost(sessionName, playerName, maxPlayersOverride: 1);
         }
 
         private void OnRefreshSessionList()

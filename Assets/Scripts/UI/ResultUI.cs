@@ -69,28 +69,23 @@ namespace GemmaQuiz.UI
 
         private void OnPlayAgain()
         {
-            // スコアと選択ジャンルをリセット
-            var session = SessionManager.Instance;
-            if (session != null)
+            // 全員を同期してロビーへ戻す。Hostが直接LoadScene、Clientは RPC でHostに依頼
+            if (playAgainButton != null) playAgainButton.interactable = false;
+
+            var sync = ResultSync.Instance;
+            if (sync != null)
             {
-                foreach (var kvp in session.Players)
-                {
-                    kvp.Value.totalScore = 0;
-                    kvp.Value.selectedGenreIndex = -1;
-                    kvp.Value.isReady = false;
-                }
+                sync.RpcRequestPlayAgain();
+                return;
             }
 
-            // ロビーへ戻る
+            // ネットワーク非接続時のフォールバック
+            Debug.LogWarning("[ResultUI] ResultSync not available; falling back to local scene load");
             var nm = NetworkManager.Instance;
             if (nm != null && nm.IsHost)
-            {
                 nm.LoadScene("LobbyScene");
-            }
             else
-            {
                 SceneManager.LoadScene("LobbyScene");
-            }
         }
 
         private void OnBackToTitle()

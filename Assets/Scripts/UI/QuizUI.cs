@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using GemmaQuiz.Data;
 using GemmaQuiz.Quiz;
+using GemmaQuiz.Audio;
 
 namespace GemmaQuiz.UI
 {
@@ -189,6 +190,7 @@ namespace GemmaQuiz.UI
             hasAnswered = true;
             selectedChoice = index;
 
+            AudioManager.Play(SfxKind.Tap);
             StartScalePunch(choiceButtons[index].transform, 1.1f, 0.25f);
 
             for (int i = 0; i < 4; i++)
@@ -287,6 +289,7 @@ namespace GemmaQuiz.UI
                     {
                         if (pr.isCorrect)
                         {
+                            AudioManager.Play(SfxKind.Correct);
                             resultText.text = "正解!";
                             resultText.color = correctChoiceColor;
                             scoreText.text = $"+{pr.score}点 ({pr.elapsedTime:F1}秒)";
@@ -300,6 +303,7 @@ namespace GemmaQuiz.UI
                         }
                         else
                         {
+                            AudioManager.Play(SfxKind.Wrong);
                             resultText.text = "不正解...";
                             resultText.color = wrongChoiceColor;
                             scoreText.text = "+0点";

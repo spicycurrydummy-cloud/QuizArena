@@ -30,6 +30,12 @@ jobs:
             Library-WebGL-
             Library-
 
+      # Inception APIキーをResourcesに書き出し (コード経由でロードされる)
+      - name: Inject Inception API key
+        run: |
+          mkdir -p Assets/Resources
+          printf '%s' "${{ secrets.INCEPTION_API_KEY }}" > Assets/Resources/InceptionKey.txt
+
       # Unity WebGL ビルド
       - uses: game-ci/unity-builder@v4
         env:

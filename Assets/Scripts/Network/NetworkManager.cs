@@ -42,11 +42,13 @@ namespace GemmaQuiz.Network
 
         /// <summary>
         /// ホストとしてセッションを作成する。
+        /// maxPlayersOverride: 0 以下ならデフォルトの maxPlayers を使用（ソロテストは 1 を渡す）
         /// </summary>
-        public async void StartHost(string sessionName, string playerName)
+        public async void StartHost(string sessionName, string playerName, int maxPlayersOverride = 0)
         {
             LocalPlayerName = playerName;
-            await StartSession(GameMode.Host, sessionName);
+            int capacity = maxPlayersOverride > 0 ? maxPlayersOverride : maxPlayers;
+            await StartSession(GameMode.Host, sessionName, capacity);
         }
 
         /// <summary>
@@ -97,8 +99,9 @@ namespace GemmaQuiz.Network
             SessionManager.Instance?.ClearAll();
         }
 
-        private async System.Threading.Tasks.Task StartSession(GameMode mode, string sessionName)
+        private async System.Threading.Tasks.Task StartSession(GameMode mode, string sessionName, int capacity = 0)
         {
+            if (capacity <= 0) capacity = maxPlayers;
             // 既存のRunnerを完全にクリーンアップ
             await CleanupRunner();
 
@@ -128,7 +131,7 @@ namespace GemmaQuiz.Network
             {
                 GameMode = mode,
                 SessionName = sessionName,
-                PlayerCount = maxPlayers,
+                PlayerCount = capacity,
                 SceneManager = sceneMgr,
                 IsVisible = true,
                 IsOpen = true,
@@ -167,8 +170,13 @@ namespace GemmaQuiz.Network
                 return;
             }
 
+            // ロビー以外のシーンでは途中参加不可にする
+            bool isLobby = sceneName == "LobbyScene";
+            Runner.SessionInfo.IsOpen = isLobby;
+            Runner.SessionInfo.IsVisible = isLobby;
+            Debug.Log($"[NetworkManager] LoadScene: {sceneName} (IsOpen={isLobby})");
+
             int idx = SceneUtility.GetBuildIndexByScenePath($"Assets/Scenes/{sceneName}.unity");
-            Debug.Log($"[NetworkManager] LoadScene: {sceneName} (buildIndex={idx})");
             Runner.LoadScene(SceneRef.FromIndex(idx));
         }
 

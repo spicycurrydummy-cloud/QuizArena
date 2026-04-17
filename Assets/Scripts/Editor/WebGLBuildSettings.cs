@@ -19,8 +19,8 @@ namespace GemmaQuiz.Editor
             // 圧縮形式: Gzip (Brotliより互換性が高い)
             PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Gzip;
 
-            // テンプレート: Default
-            PlayerSettings.WebGL.template = "APPLICATION:Default";
+            // テンプレート: Dark (Assets/WebGLTemplates/Dark)
+            PlayerSettings.WebGL.template = "PROJECT:Dark";
 
             // メモリサイズ (Photon Fusion + AI生成で多めに)
             PlayerSettings.WebGL.initialMemorySize = 64;

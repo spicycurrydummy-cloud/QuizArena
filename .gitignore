@@ -87,3 +87,7 @@ Thumbs.db
 # Debug logs
 debug.log
 *.log
+
+# Secrets
+Assets/Resources/InceptionKey.txt
+Assets/Resources/InceptionKey.txt.meta

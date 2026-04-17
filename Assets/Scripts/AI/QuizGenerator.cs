@@ -46,10 +46,12 @@ namespace GemmaQuiz.AI
         [Header("Inception Settings")]
         [SerializeField] private string inceptionUrl = "https://api.inceptionlabs.ai/v1";
         [SerializeField] private string inceptionModel = "mercury-2";
+        [SerializeField] private string inceptionReasoningEffort = "high"; // low / medium / high
 
-        // APIキーはコード埋め込み。Inspectorで上書き可能だが空なら既定値を使う。
-        private const string DefaultInceptionApiKey = "sk_4b28db9e4331157a84732e46e6b56d2a";
-        private string inceptionApiKey = "";
+        // APIキーは Resources/InceptionKey.txt から読み込む (gitignore済み)。
+        // CIではGitHub Secret → ファイル書き出し → ビルド、の順で注入。
+        // Inspector上書き用フィールド（空なら Resources から読む）
+        [SerializeField] private string inceptionApiKey = "";
 
         [Header("Common Settings")]
         [SerializeField] private float temperature = 0.4f;
@@ -59,7 +61,7 @@ namespace GemmaQuiz.AI
             get => questionsPerGenre;
             set => questionsPerGenre = Mathf.Clamp(value, 1, 20);
         }
-        [SerializeField] private int maxRetries = 3;
+        [SerializeField] private int maxRetries = 6;
 
         [Header("Validation")]
         [SerializeField] private bool enableValidationPass = false;
@@ -109,18 +111,46 @@ namespace GemmaQuiz.AI
             rng = new System.Random();
         }
 
+        private static string LoadApiKeyFromResources()
+        {
+#if UNITY_EDITOR
+            // エディタ実行時は UserSettings/InceptionKey.txt (gitignore済) を優先
+            try
+            {
+                var userSettingsPath = System.IO.Path.Combine(
+                    System.IO.Directory.GetParent(Application.dataPath).FullName,
+                    "UserSettings", "InceptionKey.txt");
+                if (System.IO.File.Exists(userSettingsPath))
+                {
+                    var text = System.IO.File.ReadAllText(userSettingsPath).Trim();
+                    if (!string.IsNullOrEmpty(text)) return text;
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[QuizGenerator] UserSettings key read error: {e.Message}");
+            }
+#endif
+            // ランタイム/CIビルドは Resources/InceptionKey.txt から読む
+            var asset = Resources.Load<TextAsset>("InceptionKey");
+            if (asset == null) return "";
+            return asset.text.Trim();
+        }
+
         private void RebuildClient()
         {
             switch (aiProvider)
             {
                 case AIProvider.Inception:
-                    var key = string.IsNullOrEmpty(inceptionApiKey) ? DefaultInceptionApiKey : inceptionApiKey;
+                    var key = string.IsNullOrEmpty(inceptionApiKey) ? LoadApiKeyFromResources() : inceptionApiKey;
+                    if (string.IsNullOrEmpty(key))
+                        Debug.LogError("[QuizGenerator] Inception API key not found. Place key in Resources/InceptionKey.txt or set in Inspector.");
                     // mercury-coder-small は廃止済み、mercury-2 にフォールバック
                     var model = inceptionModel;
                     if (string.IsNullOrEmpty(model) || model.Contains("coder-small"))
                         model = "mercury-2";
-                    client = new InceptionClient(key, inceptionUrl, model, temperature);
-                    Debug.Log($"[QuizGenerator] Using Inception (model: {model}, url: {inceptionUrl})");
+                    client = new InceptionClient(key, inceptionUrl, model, temperature, inceptionReasoningEffort);
+                    Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort})");
                     break;
                 default:
                     client = new OllamaClient(ollamaUrl, ollamaModel, temperature);
@@ -259,15 +289,20 @@ namespace GemmaQuiz.AI
                         throw new Exception("生成された問題が空です");
                     }
 
-                    // 期待数の半分未満ならリトライ（一発全滅を避けつつある程度の質を保証）
+                    // 規定数に満たない場合はリトライ。ただし最終試行では最低ラインを受容。
+                    bool isLastAttempt = attempt >= maxRetries;
                     int minAcceptable = Mathf.Max(1, questionsPerGenre / 2);
-                    if (questionSet.questions.Count < minAcceptable)
+                    if (questionSet.questions.Count < questionsPerGenre && !isLastAttempt)
                     {
-                        throw new Exception($"問題数が不足: {questionSet.questions.Count}/{questionsPerGenre}");
+                        throw new Exception($"問題数が規定未達 ({questionSet.questions.Count}/{questionsPerGenre}) - リトライ");
+                    }
+                    if (isLastAttempt && questionSet.questions.Count < minAcceptable)
+                    {
+                        throw new Exception($"問題数が最低ラインも未達: {questionSet.questions.Count}/{questionsPerGenre}");
                     }
                     if (questionSet.questions.Count < questionsPerGenre)
                     {
-                        Debug.LogWarning($"[QuizGenerator] 問題数が期待値より少ない: {questionSet.questions.Count}/{questionsPerGenre} (続行)");
+                        Debug.LogWarning($"[QuizGenerator] 問題数が期待値より少ない: {questionSet.questions.Count}/{questionsPerGenre} (最終試行のため続行)");
                     }
 
                     // Pass 2: AI検証（有効時）
@@ -522,6 +557,17 @@ namespace GemmaQuiz.AI
                 {
                     Debug.LogWarning($"[QuizGenerator] 問題{i + 1}: correct_index({q.correct_index})が範囲外、0にリセット");
                     q.correct_index = 0;
+                }
+
+                // 問題文に正解テキストが含まれている場合は除外（自己言及問題）
+                var correctText = q.choices[q.correct_index];
+                if (!string.IsNullOrWhiteSpace(correctText) && correctText.Length >= 2 &&
+                    q.question != null && q.question.Contains(correctText))
+                {
+                    Debug.LogWarning($"[QuizGenerator] 問題{i + 1}を除外: 問題文に正解『{correctText}』が含まれている");
+                    questionSet.questions.RemoveAt(i);
+                    removed++;
+                    continue;
                 }
             }
 

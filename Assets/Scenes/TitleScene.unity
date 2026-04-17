@@ -1305,6 +1305,7 @@ GameObject:
   - component: {fileID: 595999575}
   - component: {fileID: 595999574}
   - component: {fileID: 595999576}
+  - component: {fileID: 595999577}
   m_Layer: 0
   m_Name: CreateSessionButton
   m_TagString: Untagged
@@ -1414,6 +1415,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &595999577
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 595999572}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &599252453
 GameObject:
   m_ObjectHideFlags: 0
@@ -1763,6 +1777,63 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 711958301}
   m_CullTransparentMesh: 1
+--- !u!1 &752511493
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 752511495}
+  - component: {fileID: 752511494}
+  m_Layer: 0
+  m_Name: AudioManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &752511494
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 752511493}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d02c05c153336b24aba5f48f21c71112, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.AudioManager
+  bgmSource: {fileID: 0}
+  sfxSource: {fileID: 0}
+  titleBgm: {fileID: 8300000, guid: d67bf560b81fe2b4485bd0a65455bf81, type: 3}
+  lobbyBgm: {fileID: 8300000, guid: 9c254f1c23da57440972b8cb04620649, type: 3}
+  quizBgm: {fileID: 8300000, guid: 5e26d782f2926fa44af7eabadc6edc7a, type: 3}
+  resultBgm: {fileID: 8300000, guid: 7ea04de4e9bde124c9d2560f24fb8f07, type: 3}
+  sfxClick: {fileID: 8300000, guid: 01455c068218bb5488415a6e26be1460, type: 3}
+  sfxTap: {fileID: 8300000, guid: 47483980db7d088478a870678b7f42a4, type: 3}
+  sfxCorrect: {fileID: 8300000, guid: b48ecb334e71a9f4eb1a1e3250d2573f, type: 3}
+  sfxWrong: {fileID: 8300000, guid: 26c9f8c6a0f867f459bdfa28b279edda, type: 3}
+  sfxTick: {fileID: 8300000, guid: d42bd2e93bd717048af3e146da68410b, type: 3}
+  bgmVolume: 0.35
+  sfxVolume: 0.8
+--- !u!4 &752511495
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 752511493}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &890804634
 GameObject:
   m_ObjectHideFlags: 0
@@ -2102,6 +2173,7 @@ GameObject:
   - component: {fileID: 1075068561}
   - component: {fileID: 1075068560}
   - component: {fileID: 1075068562}
+  - component: {fileID: 1075068563}
   m_Layer: 0
   m_Name: RefreshSessionListButton
   m_TagString: Untagged
@@ -2211,6 +2283,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &1075068563
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1075068558}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &1125816320
 GameObject:
   m_ObjectHideFlags: 0
@@ -2302,6 +2387,7 @@ GameObject:
   - component: {fileID: 1181622026}
   - component: {fileID: 1181622025}
   - component: {fileID: 1181622027}
+  - component: {fileID: 1181622028}
   m_Layer: 0
   m_Name: SoloTestButton
   m_TagString: Untagged
@@ -2411,6 +2497,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &1181622028
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1181622023}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &1242870339
 GameObject:
   m_ObjectHideFlags: 0
@@ -2739,6 +2838,7 @@ GameObject:
   - component: {fileID: 1358565370}
   - component: {fileID: 1358565369}
   - component: {fileID: 1358565371}
+  - component: {fileID: 1358565372}
   m_Layer: 0
   m_Name: JoinSessionButton
   m_TagString: Untagged
@@ -2848,6 +2948,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &1358565372
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1358565367}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &1367521671
 GameObject:
   m_ObjectHideFlags: 0
@@ -3157,6 +3270,7 @@ MonoBehaviour:
   ollamaModel: gemma4:e4b
   inceptionUrl: https://api.inceptionlabs.ai/v1
   inceptionModel: mercury-2
+  inceptionApiKey: 
   temperature: 0.7
   questionsPerGenre: 5
   maxRetries: 3
@@ -3968,3 +4082,4 @@ SceneRoots:
   - {fileID: 1407711656}
   - {fileID: 664926657}
   - {fileID: 2036297632}
+  - {fileID: 752511495}

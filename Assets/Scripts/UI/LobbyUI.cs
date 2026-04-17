@@ -78,11 +78,9 @@ namespace GemmaQuiz.UI
             UpdateSessionInfo();
             RefreshPlayerList();
 
-            var nm = NetworkManager.Instance;
-            if (nm != null && nm.IsHost)
-            {
-                StartPreGeneration();
-            }
+            // ロビー入室時の事前生成は無効化（2026-04: Mercury-2 high reasoning で十分速いため）
+            // var nm = NetworkManager.Instance;
+            // if (nm != null && nm.IsHost) StartPreGeneration();
         }
 
         private void StartPreGeneration()

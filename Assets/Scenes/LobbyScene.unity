@@ -580,6 +580,7 @@ GameObject:
   - component: {fileID: 302514392}
   - component: {fileID: 302514391}
   - component: {fileID: 302514393}
+  - component: {fileID: 302514394}
   m_Layer: 0
   m_Name: StartGameButton
   m_TagString: Untagged
@@ -689,6 +690,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &302514394
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 302514389}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &370039689
 GameObject:
   m_ObjectHideFlags: 0
@@ -701,6 +715,7 @@ GameObject:
   - component: {fileID: 370039692}
   - component: {fileID: 370039691}
   - component: {fileID: 370039693}
+  - component: {fileID: 370039694}
   m_Layer: 0
   m_Name: MinusButton
   m_TagString: Untagged
@@ -810,6 +825,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &370039694
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 370039689}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &412833293
 GameObject:
   m_ObjectHideFlags: 0
@@ -822,6 +850,7 @@ GameObject:
   - component: {fileID: 412833296}
   - component: {fileID: 412833295}
   - component: {fileID: 412833297}
+  - component: {fileID: 412833298}
   m_Layer: 0
   m_Name: PlusButton
   m_TagString: Untagged
@@ -931,6 +960,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &412833298
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 412833293}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &473186431
 GameObject:
   m_ObjectHideFlags: 0
@@ -2177,6 +2219,7 @@ GameObject:
   - component: {fileID: 1901318533}
   - component: {fileID: 1901318532}
   - component: {fileID: 1901318534}
+  - component: {fileID: 1901318535}
   m_Layer: 0
   m_Name: LeaveButton
   m_TagString: Untagged
@@ -2286,6 +2329,19 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls: []
+--- !u!114 &1901318535
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1901318530}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
+  kind: 0
 --- !u!1 &1935438774
 GameObject:
   m_ObjectHideFlags: 0

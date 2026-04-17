@@ -16,17 +16,20 @@ namespace GemmaQuiz.AI
         private readonly string model;
         private readonly string apiKey;
         private readonly float temperature;
+        private readonly string reasoningEffort;
 
         public InceptionClient(
             string apiKey,
             string baseUrl = "https://api.inceptionlabs.ai/v1",
-            string model = "mercury-coder-small",
-            float temperature = 0.7f)
+            string model = "mercury-2",
+            float temperature = 0.4f,
+            string reasoningEffort = "high")
         {
             this.apiKey = apiKey;
             this.baseUrl = baseUrl.TrimEnd('/');
             this.model = model;
             this.temperature = temperature;
+            this.reasoningEffort = reasoningEffort;
         }
 
         public async Task<string> GenerateAsync(string prompt, string jsonSchema = null)
@@ -47,11 +50,17 @@ namespace GemmaQuiz.AI
                 responseFormatBlock = "\"response_format\":{\"type\":\"json_object\"}";
             }
 
+            // reasoning_effort (low/medium/high) - 'high'で拡張思考モード
+            string reasoningBlock = "";
+            if (!string.IsNullOrEmpty(reasoningEffort))
+                reasoningBlock = $"\"reasoning_effort\":\"{EscapeJson(reasoningEffort)}\",";
+
             // リクエストボディ構築
             var json = $"{{\"model\":\"{EscapeJson(model)}\","
                 + $"\"messages\":[{{\"role\":\"user\",\"content\":\"{EscapeJson(prompt)}\"}}],"
-                + $"\"temperature\":{temperature},"
-                + $"\"max_tokens\":4096,"
+                + $"\"temperature\":{temperature.ToString(System.Globalization.CultureInfo.InvariantCulture)},"
+                + $"\"max_tokens\":8192,"
+                + reasoningBlock
                 + $"{responseFormatBlock}}}";
 
             Debug.Log($"[InceptionClient] POST {url} (model: {model}, prompt length: {prompt.Length})");
