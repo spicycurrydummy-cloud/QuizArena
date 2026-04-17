@@ -55,11 +55,14 @@ namespace GemmaQuiz.AI
             if (!string.IsNullOrEmpty(reasoningEffort))
                 reasoningBlock = $"\"reasoning_effort\":\"{EscapeJson(reasoningEffort)}\",";
 
+            // max_tokens は reasoning コストを考慮して調整
+            int maxTokens = reasoningEffort == "high" ? 6000 : 4096;
+
             // リクエストボディ構築
             var json = $"{{\"model\":\"{EscapeJson(model)}\","
                 + $"\"messages\":[{{\"role\":\"user\",\"content\":\"{EscapeJson(prompt)}\"}}],"
                 + $"\"temperature\":{temperature.ToString(System.Globalization.CultureInfo.InvariantCulture)},"
-                + $"\"max_tokens\":8192,"
+                + $"\"max_tokens\":{maxTokens},"
                 + reasoningBlock
                 + $"{responseFormatBlock}}}";
 

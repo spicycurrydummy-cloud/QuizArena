@@ -46,7 +46,7 @@ namespace GemmaQuiz.AI
         [Header("Inception Settings")]
         [SerializeField] private string inceptionUrl = "https://api.inceptionlabs.ai/v1";
         [SerializeField] private string inceptionModel = "mercury-2";
-        [SerializeField] private string inceptionReasoningEffort = "high"; // low / medium / high
+        [SerializeField] private string inceptionReasoningEffort = "medium"; // low / medium / high
 
         // APIキーは Resources/InceptionKey.txt から読み込む (gitignore済み)。
         // CIではGitHub Secret → ファイル書き出し → ビルド、の順で注入。

@@ -33,6 +33,11 @@ namespace GemmaQuiz.Quiz
         private bool subscribedToQuizManager;
         private bool lastObservedLoadingState = true;
 
+        // 擬似プログレスバー用（API同期呼び出しで中間進捗が取れないので時間ベース）
+        private float loadingStartTime;
+        private const float ExpectedLoadSeconds = 12f;
+        private float loadingRealProgress; // OnGenerationProgress から届いた実値
+
         private System.Collections.IEnumerator Start()
         {
             if (loadingPanel != null) loadingPanel.SetActive(false);
@@ -93,7 +98,18 @@ namespace GemmaQuiz.Quiz
             if (loading)
             {
                 UpdateLoadingPanelText();
+                UpdateLoadingBar();
             }
+        }
+
+        private void UpdateLoadingBar()
+        {
+            if (loadingBar == null) return;
+            // 経過時間から推定(0→0.9 over ExpectedLoadSeconds) と 実進捗値 のうち大きい方を採用
+            float elapsed = Mathf.Max(0f, Time.time - loadingStartTime);
+            float estimated = Mathf.Min(0.9f, elapsed / ExpectedLoadSeconds * 0.9f);
+            float target = Mathf.Max(estimated, loadingRealProgress);
+            loadingBar.fillAmount = Mathf.MoveTowards(loadingBar.fillAmount, target, Time.deltaTime * 0.6f);
         }
 
         private void TrySubscribeToQuizManager()
@@ -121,6 +137,9 @@ namespace GemmaQuiz.Quiz
                 if (quizUI != null) quizUI.SetContentVisible(false);
                 if (roundInfoPanel != null) roundInfoPanel.SetActive(false);
                 if (loadingPanel != null) loadingPanel.SetActive(true);
+                loadingStartTime = Time.time;
+                loadingRealProgress = 0f;
+                if (loadingBar != null) loadingBar.fillAmount = 0f;
                 UpdateLoadingPanelText();
             }
             else
@@ -137,14 +156,11 @@ namespace GemmaQuiz.Quiz
             if (qm == null || loadingText == null) return;
             string genreName = qm.LoadingRoundGenreName.ToString();
 
-            if (string.IsNullOrEmpty(genreName))
-            {
-                loadingText.text = "問題を準備中...";
-                return;
-            }
+            string newText = string.IsNullOrEmpty(genreName)
+                ? "問題を準備中..."
+                : $"{genreName} の問題を生成中...";
 
-            // 単一行 (loadingText の rect が低いので複数行は見切れる)
-            loadingText.text = $"{genreName} の問題を生成中...";
+            loadingText.text = newText;
         }
 
         /// <summary>
@@ -266,6 +282,9 @@ namespace GemmaQuiz.Quiz
 
             var round = rounds[currentRoundIndex];
 
+            // ラウンド(=ジャンル)切り替え時にBGMをランダムに差し替え
+            Audio.AudioManager.Instance?.PlayRandomQuizBgm();
+
             // ネットワーク状態に書き込み (クライアントにも伝わる)
             var qm = QuizManager.Instance;
             if (qm != null && qm.HasStateAuthority)
@@ -310,14 +329,15 @@ namespace GemmaQuiz.Quiz
 
         private void HandleProgress(float progress)
         {
-            if (loadingBar != null)
-                loadingBar.fillAmount = progress;
-            // テキスト本体は UpdateLoadingPanelText が継続更新
+            // 実進捗は UpdateLoadingBar で使う（経過時間ベースと合わせて大きい方を採用）
+            loadingRealProgress = progress;
         }
 
         private void HandleGenerationComplete(QuizQuestionSet questionSet)
         {
             UnsubscribeGenerator();
+            loadingRealProgress = 1f;
+            if (loadingBar != null) loadingBar.fillAmount = 1f;
 
             // 次のラウンドのジャンルを事前生成開始
             if (currentRoundIndex + 1 < rounds.Count)

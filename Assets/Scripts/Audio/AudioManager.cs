@@ -26,6 +26,7 @@ namespace GemmaQuiz.Audio
         [SerializeField] private AudioClip lobbyBgm;
         [SerializeField] private AudioClip quizBgm;
         [SerializeField] private AudioClip resultBgm;
+        [SerializeField] private AudioClip[] quizBgmPool;
 
         [Header("SFX")]
         [SerializeField] private AudioClip sfxClick;
@@ -39,6 +40,33 @@ namespace GemmaQuiz.Audio
         [SerializeField, Range(0f, 1f)] private float sfxVolume = 0.8f;
 
         private AudioClip currentBgm;
+        private bool muted;
+
+        public float BgmVolume => bgmVolume;
+        public bool IsMuted => muted;
+        public event System.Action OnAudioStateChanged;
+
+        public void SetBgmVolume(float v)
+        {
+            bgmVolume = Mathf.Clamp01(v);
+            ApplyVolumes();
+            OnAudioStateChanged?.Invoke();
+        }
+
+        public void SetMuted(bool value)
+        {
+            muted = value;
+            ApplyVolumes();
+            OnAudioStateChanged?.Invoke();
+        }
+
+        public void ToggleMute() => SetMuted(!muted);
+
+        private void ApplyVolumes()
+        {
+            if (bgmSource != null) bgmSource.volume = muted ? 0f : bgmVolume;
+            if (sfxSource != null) sfxSource.volume = muted ? 0f : sfxVolume;
+        }
 
         private void Awake()
         {
@@ -62,8 +90,7 @@ namespace GemmaQuiz.Audio
                 sfxSource.loop = false;
                 sfxSource.playOnAwake = false;
             }
-            bgmSource.volume = bgmVolume;
-            sfxSource.volume = sfxVolume;
+            ApplyVolumes();
 
             SceneManager.sceneLoaded += OnSceneLoaded;
             UpdateBgmForScene(SceneManager.GetActiveScene().name);
@@ -100,6 +127,29 @@ namespace GemmaQuiz.Audio
             bgmSource.clip = clip;
             if (clip != null) bgmSource.Play();
             else bgmSource.Stop();
+        }
+
+        /// <summary>
+        /// クイズ用BGMプールから現在と異なる曲をランダム再生する。
+        /// ラウンド切り替え時に呼び出される。
+        /// </summary>
+        public void PlayRandomQuizBgm()
+        {
+            if (quizBgmPool == null || quizBgmPool.Length == 0) return;
+
+            var candidates = new System.Collections.Generic.List<AudioClip>();
+            foreach (var c in quizBgmPool)
+                if (c != null && c != currentBgm) candidates.Add(c);
+
+            if (candidates.Count == 0)
+            {
+                // 全て現在曲と同じ(=プールが1個しかない)ケース
+                PlayBgm(quizBgmPool[0]);
+                return;
+            }
+
+            var picked = candidates[Random.Range(0, candidates.Count)];
+            PlayBgm(picked);
         }
 
         public void PlaySfx(SfxKind kind)
