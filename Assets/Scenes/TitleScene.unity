@@ -2129,10 +2129,11 @@ MonoBehaviour:
   - {fileID: 8300000, guid: 9c254f1c23da57440972b8cb04620649, type: 3}
   sfxClick: {fileID: 8300000, guid: 01455c068218bb5488415a6e26be1460, type: 3}
   sfxTap: {fileID: 8300000, guid: 47483980db7d088478a870678b7f42a4, type: 3}
-  sfxCorrect: {fileID: 8300000, guid: b48ecb334e71a9f4eb1a1e3250d2573f, type: 3}
-  sfxWrong: {fileID: 8300000, guid: 26c9f8c6a0f867f459bdfa28b279edda, type: 3}
+  sfxCorrect: {fileID: 8300000, guid: b010860ac3734934db7b2635bc5845c7, type: 3}
+  sfxWrong: {fileID: 8300000, guid: fdc14be023ecf0b45bfafe33712cbe19, type: 3}
   sfxTick: {fileID: 8300000, guid: d42bd2e93bd717048af3e146da68410b, type: 3}
-  bgmVolume: 0.35
+  sfxQuestion: {fileID: 8300000, guid: 923160f18de58c74bb93a16182c1f6e1, type: 3}
+  bgmVolume: 0.2
   sfxVolume: 0.8
 --- !u!4 &752511495
 Transform:

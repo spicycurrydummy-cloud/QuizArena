@@ -24,9 +24,6 @@ namespace GemmaQuiz.Quiz
         [SerializeField] private GameObject roundInfoPanel;
         [SerializeField] private Text roundInfoText;
 
-        [Header("Settings")]
-        [SerializeField] private int randomRoundsToAdd = 1;
-
         private List<RoundInfo> rounds = new();
         private int currentRoundIndex = -1;
         private QuizUI quizUI;
@@ -164,50 +161,13 @@ namespace GemmaQuiz.Quiz
         }
 
         /// <summary>
-        /// プレイヤーの選択ジャンルからラウンド順を構築し、ランダムジャンルを混ぜる。
+        /// プレイヤーの選択ジャンルからラウンド順を構築する。
         /// </summary>
         private void BuildRoundOrder()
         {
             rounds.Clear();
 
-            // 1. ランダムラウンドを先頭に追加（事前生成済みキャッシュを活用）
-            //    ロビーで事前生成したジャンルを優先使用
-            var preGenList = AI.QuizGenerator.Instance != null ? AI.QuizGenerator.Instance.GetPreGeneratedGenres() : null;
-            if (preGenList != null && preGenList.Count > 0)
-            {
-                foreach (var encoded in preGenList)
-                {
-                    var (gIdx, sIdx) = GenreEncoding.Decode(encoded);
-                    if (gIdx < 0 || gIdx >= System.Enum.GetValues(typeof(QuizGenre)).Length) continue;
-                    rounds.Add(new RoundInfo
-                    {
-                        genre = (QuizGenre)gIdx,
-                        subGenreIndex = sIdx,
-                        ownerName = "ランダム",
-                        isRandom = true
-                    });
-                    if (rounds.Count >= randomRoundsToAdd) break;
-                }
-            }
-
-            // 不足分はその場でランダム選出
-            var allGenres = new[]
-            {
-                QuizGenre.AnimeGame, QuizGenre.Sports, QuizGenre.Entertainment,
-                QuizGenre.Lifestyle, QuizGenre.Society, QuizGenre.Humanities,
-                QuizGenre.Science
-            };
-            while (rounds.Count < randomRoundsToAdd)
-            {
-                rounds.Add(new RoundInfo
-                {
-                    genre = allGenres[Random.Range(0, allGenres.Length)],
-                    ownerName = "ランダム",
-                    isRandom = true
-                });
-            }
-
-            // 2. プレイヤー選択ジャンルを後に追加（LobbySync同期データを使用）
+            // プレイヤー選択ジャンルを追加（LobbySync同期データを使用）
             var sync = Network.LobbySync.Instance;
             if (sync != null)
             {

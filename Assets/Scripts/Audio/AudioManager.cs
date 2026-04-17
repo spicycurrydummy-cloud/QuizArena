@@ -10,7 +10,8 @@ namespace GemmaQuiz.Audio
         Tap,
         Correct,
         Wrong,
-        Tick
+        Tick,
+        Question
     }
 
     public class AudioManager : MonoBehaviour
@@ -34,6 +35,7 @@ namespace GemmaQuiz.Audio
         [SerializeField] private AudioClip sfxCorrect;
         [SerializeField] private AudioClip sfxWrong;
         [SerializeField] private AudioClip sfxTick;
+        [SerializeField] private AudioClip sfxQuestion;
 
         [Header("Volumes")]
         [SerializeField, Range(0f, 1f)] private float bgmVolume = 0.35f;
@@ -161,6 +163,7 @@ namespace GemmaQuiz.Audio
                 SfxKind.Correct => sfxCorrect,
                 SfxKind.Wrong => sfxWrong,
                 SfxKind.Tick => sfxTick,
+                SfxKind.Question => sfxQuestion,
                 _ => null
             };
             if (clip != null) sfxSource.PlayOneShot(clip, sfxVolume);

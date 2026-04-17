@@ -285,6 +285,9 @@ namespace GemmaQuiz.UI
                 text.text = label;
                 text.fontSize = 18;
                 text.color = Color.white;
+                text.font = JapaneseFont.Get();
+                text.verticalOverflow = VerticalWrapMode.Overflow;
+                text.horizontalOverflow = HorizontalWrapMode.Overflow;
             }
 
             var btn = btnObj.GetComponent<Button>();

@@ -311,7 +311,7 @@ RectTransform:
   m_Father: {fileID: 2130809586}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.52, y: 0.2}
-  m_AnchorMax: {x: 0.82, y: 0.8}
+  m_AnchorMax: {x: 0.87, y: 0.8}
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 0, y: 0}
   m_Pivot: {x: 0.5, y: 0.5}
@@ -365,7 +365,6 @@ GameObject:
   - component: {fileID: 241734138}
   - component: {fileID: 241734137}
   - component: {fileID: 241734136}
-  - component: {fileID: 241734139}
   - component: {fileID: 241734140}
   m_Layer: 0
   m_Name: ChoiceButton3
@@ -476,19 +475,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 241734134}
   m_CullTransparentMesh: 1
---- !u!114 &241734139
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 241734134}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
-  kind: 0
 --- !u!114 &241734140
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -688,8 +674,8 @@ RectTransform:
   m_Children: []
   m_Father: {fileID: 2130809586}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 0.83, y: 0}
-  m_AnchorMax: {x: 1, y: 1}
+  m_AnchorMin: {x: 0.87, y: 0}
+  m_AnchorMax: {x: 0.99, y: 1}
   m_AnchoredPosition: {x: -10, y: 0}
   m_SizeDelta: {x: -20, y: 0}
   m_Pivot: {x: 0.5, y: 0.5}
@@ -1548,7 +1534,6 @@ GameObject:
   - component: {fileID: 950440742}
   - component: {fileID: 950440741}
   - component: {fileID: 950440740}
-  - component: {fileID: 950440743}
   - component: {fileID: 950440744}
   m_Layer: 0
   m_Name: ChoiceButton2
@@ -1659,19 +1644,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 950440738}
   m_CullTransparentMesh: 1
---- !u!114 &950440743
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 950440738}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
-  kind: 0
 --- !u!114 &950440744
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1910,7 +1882,6 @@ GameObject:
   - component: {fileID: 1052206340}
   - component: {fileID: 1052206339}
   - component: {fileID: 1052206338}
-  - component: {fileID: 1052206341}
   - component: {fileID: 1052206342}
   m_Layer: 0
   m_Name: ChoiceButton0
@@ -2021,19 +1992,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1052206336}
   m_CullTransparentMesh: 1
---- !u!114 &1052206341
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1052206336}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
-  kind: 0
 --- !u!114 &1052206342
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2059,7 +2017,6 @@ GameObject:
   - component: {fileID: 1082498779}
   - component: {fileID: 1082498778}
   - component: {fileID: 1082498777}
-  - component: {fileID: 1082498780}
   - component: {fileID: 1082498781}
   m_Layer: 0
   m_Name: ChoiceButton1
@@ -2170,19 +2127,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1082498775}
   m_CullTransparentMesh: 1
---- !u!114 &1082498780
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1082498775}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: debd54804ca045b4dbbef6e4d56f3fd5, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::GemmaQuiz.Audio.ButtonClickSfx
-  kind: 0
 --- !u!114 &1082498781
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2307,7 +2251,6 @@ MonoBehaviour:
   loadingBar: {fileID: 1765328886}
   roundInfoPanel: {fileID: 1476826443}
   roundInfoText: {fileID: 1532922337}
-  randomRoundsToAdd: 1
 --- !u!4 &1316540694
 Transform:
   m_ObjectHideFlags: 0

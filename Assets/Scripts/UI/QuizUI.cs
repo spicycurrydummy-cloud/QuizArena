@@ -147,6 +147,7 @@ namespace GemmaQuiz.UI
             selectedChoice = -1;
             timerWarning = false;
 
+            AudioManager.Play(SfxKind.Question);
             resultPanel.SetActive(false);
             ClearAnswerList();
 
@@ -190,7 +191,6 @@ namespace GemmaQuiz.UI
             hasAnswered = true;
             selectedChoice = index;
 
-            AudioManager.Play(SfxKind.Tap);
             StartScalePunch(choiceButtons[index].transform, 1.1f, 0.25f);
 
             for (int i = 0; i < 4; i++)
