@@ -2133,8 +2133,8 @@ MonoBehaviour:
   sfxWrong: {fileID: 8300000, guid: fdc14be023ecf0b45bfafe33712cbe19, type: 3}
   sfxTick: {fileID: 8300000, guid: d42bd2e93bd717048af3e146da68410b, type: 3}
   sfxQuestion: {fileID: 8300000, guid: 923160f18de58c74bb93a16182c1f6e1, type: 3}
-  bgmVolume: 0.2
-  sfxVolume: 0.8
+  bgmVolume: 0.15
+  sfxVolume: 0.6
 --- !u!4 &752511495
 Transform:
   m_ObjectHideFlags: 0

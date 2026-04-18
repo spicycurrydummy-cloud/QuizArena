@@ -38,8 +38,8 @@ namespace GemmaQuiz.Audio
         [SerializeField] private AudioClip sfxQuestion;
 
         [Header("Volumes")]
-        [SerializeField, Range(0f, 1f)] private float bgmVolume = 0.35f;
-        [SerializeField, Range(0f, 1f)] private float sfxVolume = 0.8f;
+        [SerializeField, Range(0f, 1f)] private float bgmVolume = 0.15f;
+        [SerializeField, Range(0f, 1f)] private float sfxVolume = 0.6f;
 
         private AudioClip currentBgm;
         private bool muted;

@@ -310,11 +310,32 @@ namespace GemmaQuiz.Quiz
             Invoke(nameof(StartQuizRound), 0.8f);
         }
 
-        private void HandleGenerationFailed(string error)
+private void HandleGenerationFailed(string error)
         {
             UnsubscribeGenerator();
-            SetLoadingText($"エラー: {error}");
+            Debug.LogWarning($"[QuizFlowController] Generation failed for round {currentRoundIndex + 1}: {error}");
+
+            bool hasMoreRounds = currentRoundIndex + 1 < rounds.Count;
+            string skipMsg = hasMoreRounds
+                ? "問題生成に失敗しました。次のラウンドへスキップします..."
+                : "問題生成に失敗しました。結果画面へ移動します...";
+            SetLoadingText(skipMsg);
+
+            CancelInvoke(nameof(SkipFailedRound));
+            CancelInvoke(nameof(LoadResultScene));
+            if (hasMoreRounds)
+                Invoke(nameof(SkipFailedRound), 2.5f);
+            else
+                Invoke(nameof(LoadResultScene), 2.5f);
         }
+
+private void SkipFailedRound()
+        {
+            var nm = NetworkManager.Instance;
+            if (nm == null || !nm.IsHost) return;
+            StartNextRound();
+        }
+
 
         private void StartQuizRound()
         {

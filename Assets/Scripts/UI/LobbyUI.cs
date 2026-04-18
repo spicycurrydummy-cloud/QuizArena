@@ -452,7 +452,8 @@ namespace GemmaQuiz.UI
                     entry.Setup(displayName, playerIsHost, roleText);
             }
 
-            playerCountText.text = $"{session.PlayerCount} / 8";
+            int maxPlayers = (runner != null && runner.SessionInfo != null && runner.SessionInfo.IsValid && runner.SessionInfo.MaxPlayers > 0) ? runner.SessionInfo.MaxPlayers : 8;
+            playerCountText.text = $"{session.PlayerCount} / {maxPlayers}";
 
             bool isHost = nm != null && nm.IsHost;
             startGameButton.gameObject.SetActive(isHost);
