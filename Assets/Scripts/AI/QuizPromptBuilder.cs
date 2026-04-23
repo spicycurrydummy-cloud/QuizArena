@@ -34,9 +34,7 @@ namespace GemmaQuiz.AI
             string genreInstruction;
             if (genre == QuizGenre.NonGenre)
             {
-                genreInstruction = $@"以下の全ジャンルから満遍なく混ぜて4択クイズを{questionCount}問作ってください。
-ジャンル: アニメ・ゲーム、スポーツ、芸能、生活、社会、文系学問、理系学問
-各問題はそれぞれ異なるジャンルから出題し、同じジャンルが連続しないようにしてください。";
+                genreInstruction = $@"Generate a {questionCount}-question four-choice quiz in Japanese, drawing evenly from these Japanese genre labels: アニメ・ゲーム, スポーツ, 芸能, 生活, 社会, 文系学問, 理系学問. Each question must be from a different genre; do not let the same genre appear in consecutive questions.";
             }
             else if (subGenreIndex >= 1)
             {
@@ -44,17 +42,16 @@ namespace GemmaQuiz.AI
                 if (subs != null && subGenreIndex <= subs.Length)
                 {
                     var specificSub = subs[subGenreIndex - 1];
-                    genreInstruction = $@"{genreName}の中の「{specificSub}」に関する4択クイズを{questionCount}問作ってください。
-出題範囲は{specificSub}に限定してください。";
+                    genreInstruction = $@"Generate a {questionCount}-question four-choice quiz in Japanese on the genre ""{genreName}"", strictly limited to the sub-topic ""{specificSub}"". Every question must be about ""{specificSub}"" and must not stray into other topics or other genres.";
                 }
                 else
                 {
-                    genreInstruction = $@"{genreName}（{subGenres}）の4択クイズを{questionCount}問作ってください。";
+                    genreInstruction = $@"Generate a {questionCount}-question four-choice quiz in Japanese on the genre ""{genreName}"" (scope: {subGenres}). Every question must stay inside this genre.";
                 }
             }
             else
             {
-                genreInstruction = $@"{genreName}（{subGenres}）の4択クイズを{questionCount}問作ってください。";
+                genreInstruction = $@"Generate a {questionCount}-question four-choice quiz in Japanese on the genre ""{genreName}"" (scope: {subGenres}). Every question must stay inside this genre.";
             }
 
             return BuildBody(genreInstruction, examples, questionCount, easy, normal, hard);
@@ -69,7 +66,7 @@ namespace GemmaQuiz.AI
             int hard = Mathf.Max(1, Mathf.RoundToInt(questionCount * 0.2f));
             int normal = questionCount - easy - hard;
 
-            string genreInstruction = $@"「{customGenreName}」に関する4択クイズを{questionCount}問作ってください。";
+            string genreInstruction = $@"Generate a {questionCount}-question four-choice quiz in Japanese on the topic ""{customGenreName}"". Every question must be directly about ""{customGenreName}""; do not drift to unrelated topics.";
             var examples = GetExamples(QuizGenre.NonGenre);
 
             return BuildBody(genreInstruction, examples, questionCount, easy, normal, hard);
@@ -79,52 +76,46 @@ namespace GemmaQuiz.AI
         {
             return $@"{genreInstruction}
 
-難易度の配分:
-- 簡単な問題を{easy}問: 誰もが知っている有名な事実
-- 普通の問題を{normal}問: ある程度の知識があれば解ける問題
-- 難しい問題を{hard}問: マニアックな知識が必要な問題
-この順番で並べてください。
+IMPORTANT: Stay strictly inside the requested genre. Do not use topics from any other genre under any circumstance. The examples below are ONLY for JSON format reference — never copy their subject matter, named entities, or domain.
 
-問題のルール:
-- 問題は固有名詞・数値を問う、答えがただ1つに決まるものにする
-- 年号や西暦を答えさせる問題は禁止
-- 定義や概念を問う問題は禁止
-- 「有名な〜は？」「代表的な〜は？」のような主観で複数答えうる問題は禁止
-- 正解は事実として確実に正しい1つの固有名詞・数値
-- 不正解の3つも実在する有名な名称にする
-- 不正解は正解と同じカテゴリから選ぶが、正解の代わりに当てはまるものを入れない
-- 難しい問題は不正解の選択肢も紛らわしいものにする
+Difficulty distribution (arrange questions in this order):
+- {easy} easy question(s): facts commonly known to the general public
+- {normal} normal question(s): solvable with moderate knowledge
+- {hard} hard question(s): require deeper / specialised knowledge
 
-問題文の禁止事項（重要）:
-- 問題文に正解そのものを絶対に含めない
-  悪い例: 「ワンピースの主人公、麦わら海賊団のルフィの所属は？」→ 答え「麦わら海賊団」が文中にある
-  良い例: 「ワンピースの主人公ルフィが所属する海賊団は？」→ 答え「麦わら海賊団」は文中にない
-- 問題文に正解の一部や言い換えを含めない
-  悪い例: 「スペインの首都マドリードがある国は？」→ 答え「スペイン」が文中にある
-- 問題文の手がかりから答えが自明になる表現を避ける
-- 問題文は答えを知らなければ解けない形にする
+Question content rules:
+- Each question must ask for a proper noun or a number with exactly one definitively correct answer
+- Do NOT ask for years or dates as the answer
+- Do NOT ask for definitions, concepts, or subjective ""most famous / most representative"" questions
+- The correct answer must be a factually certain proper noun or number
+- The three wrong answers must be real, well-known entities from the same category
+- Wrong answers must come from the same category as the correct one but must not themselves be correct substitutes
+- For hard questions, make wrong answers plausible distractors
 
-事実の正確さ:
-- 自信がない事実は問題にしない
-- 因果関係や「最初」「理由」を問う問題は誤りが混じりやすいので避ける
-- 事実確認に迷う問題は作らず、確定した知識のみを出題する
+Question-text prohibitions (critical):
+- The question text MUST NOT contain the correct answer string, nor any substring or paraphrase of it
+- Bad pattern: question reveals the answer inside the prompt (e.g. mentioning the exact name being asked)
+- Good pattern: question describes the answer indirectly so it cannot be solved without actual knowledge
+- Avoid wording whose hints make the answer self-evident
 
-多様性:
-- {questionCount}問は全て異なるテーマから出題する。同じ対象を別の角度で問うのも禁止
-- 以下のような使い古された定番問題は避けること:
-  世界一人口が多い国、日本一高い山、太陽系最大の惑星、水の化学式、
-  日本の首都、富士山の高さ、光の速さ、血液型の種類
+Factual accuracy:
+- Do not create questions on facts you are not certain about
+- Avoid ""first / reason / why"" style questions — they often contain factual errors
+- Use only well-established, unambiguous knowledge
 
-回答テキストのルール:
-- 全て日本語で出力すること。ハングル、アラビア語、タイ語などの他言語は絶対に使わない
-- answer と wrongs の中身は短い名詞のみ
-- 括弧書き、補足説明、カテゴリ名、解説、改行を含めない
-- 単に名前や数値だけ書く
+Diversity:
+- All {questionCount} questions must cover different subjects; never ask about the same subject from a different angle
+- Avoid worn-out clichés such as: most populous country, highest mountain in Japan, largest planet in the solar system, chemical formula of water, capital of Japan, height of Mt. Fuji, speed of light, number of blood types
 
-良い例:
+Output text rules (applied to every field):
+- All Japanese output only. Never use Hangul, Arabic, Thai, Cyrillic, or other non-Japanese / non-ASCII scripts
+- ""answer"" and each ""wrongs"" entry: short noun only — no parentheses, annotations, category labels, explanations, or line breaks
+- Output plain names or numbers only
+
+JSON format examples (FORMAT REFERENCE ONLY — do not reuse the subjects):
 {examples}
 
-以下のJSON形式で{questionCount}問出力してください:
+Output exactly {questionCount} questions as JSON in the following shape:
 {{""questions"":[
 {{""question"":""問題文"",""answer"":""短い名詞"",""wrongs"":[""短い名詞"",""短い名詞"",""短い名詞""]}}
 ]}}";
@@ -135,10 +126,10 @@ namespace GemmaQuiz.AI
         /// </summary>
         public static string BuildValidation(string questionsJson)
         {
-            return $@"以下のクイズの不正解の選択肢に架空の名前が含まれていないか確認してください。
-架空の名前があれば、同じカテゴリの実在する有名なものに差し替えてください。
-また、正解が事実として間違っている問題は削除してください。
-同じJSON形式で出力してください。
+            return $@"Audit the following quiz. For each question, check:
+1. Every ""wrongs"" entry must be a real, well-known entity (not fictional). Replace fictional names with real, well-known entities from the same category.
+2. The ""answer"" must be factually correct. Remove any question whose answer is factually wrong.
+Keep all text Japanese. Output the corrected quiz in the exact same JSON shape as the input.
 
 {questionsJson}";
         }
