@@ -12,7 +12,8 @@ namespace GemmaQuiz.AI
     public enum AIProvider
     {
         Ollama = 0,
-        Inception = 1
+        Inception = 1,
+        Gemini = 2
     }
 
     /// <summary>
@@ -48,10 +49,14 @@ namespace GemmaQuiz.AI
         [SerializeField] private string inceptionModel = "mercury-2";
         [SerializeField] private string inceptionReasoningEffort = "medium"; // low / medium / high
 
-        // APIキーは Resources/InceptionKey.txt から読み込む (gitignore済み)。
-        // CIではGitHub Secret → ファイル書き出し → ビルド、の順で注入。
-        // Inspector上書き用フィールド（空なら Resources から読む）
+        // APIキーは Resources/Config.json から読み込む (gitignore済み)。
+        // CIではGitHub Secret (JSON丸ごと) → Resources/Config.json へ書き出し、の順で注入。
+        // Inspector上書き用フィールド（空なら Config.json から読む）
         [SerializeField] private string inceptionApiKey = "";
+
+        [Header("Gemini Settings (Fallback)")]
+        [SerializeField] private string geminiModel = "gemini-2.5-flash-lite";
+        [SerializeField] private string geminiApiKey = "";
 
         [Header("Common Settings")]
         [SerializeField] private float temperature = 0.4f;
@@ -67,6 +72,7 @@ namespace GemmaQuiz.AI
         [SerializeField] private bool enableValidationPass = false;
 
         private IQuizAIClient client;
+        private IQuizAIClient fallbackClient; // Gemini fallback (null if primary is Gemini or key absent)
         private System.Random rng;
 
         // Ollama Structured Output 用の JSON Schema
@@ -111,40 +117,17 @@ namespace GemmaQuiz.AI
             rng = new System.Random();
         }
 
-        private static string LoadApiKeyFromResources()
-        {
-#if UNITY_EDITOR
-            // エディタ実行時は UserSettings/InceptionKey.txt (gitignore済) を優先
-            try
-            {
-                var userSettingsPath = System.IO.Path.Combine(
-                    System.IO.Directory.GetParent(Application.dataPath).FullName,
-                    "UserSettings", "InceptionKey.txt");
-                if (System.IO.File.Exists(userSettingsPath))
-                {
-                    var text = System.IO.File.ReadAllText(userSettingsPath).Trim();
-                    if (!string.IsNullOrEmpty(text)) return text;
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning($"[QuizGenerator] UserSettings key read error: {e.Message}");
-            }
-#endif
-            // ランタイム/CIビルドは Resources/InceptionKey.txt から読む
-            var asset = Resources.Load<TextAsset>("InceptionKey");
-            if (asset == null) return "";
-            return asset.text.Trim();
-        }
-
         private void RebuildClient()
         {
+            var config = AIConfig.Load();
+            string geminiKey = string.IsNullOrEmpty(geminiApiKey) ? config.gemini_api_key : geminiApiKey;
+
             switch (aiProvider)
             {
                 case AIProvider.Inception:
-                    var key = string.IsNullOrEmpty(inceptionApiKey) ? LoadApiKeyFromResources() : inceptionApiKey;
+                    var key = string.IsNullOrEmpty(inceptionApiKey) ? config.inception_api_key : inceptionApiKey;
                     if (string.IsNullOrEmpty(key))
-                        Debug.LogError("[QuizGenerator] Inception API key not found. Place key in Resources/InceptionKey.txt or set in Inspector.");
+                        Debug.LogError("[QuizGenerator] Inception API key not found. Place key in Resources/Config.json or set in Inspector.");
                     // mercury-coder-small は廃止済み、mercury-2 にフォールバック
                     var model = inceptionModel;
                     if (string.IsNullOrEmpty(model) || model.Contains("coder-small"))
@@ -152,10 +135,27 @@ namespace GemmaQuiz.AI
                     client = new InceptionClient(key, inceptionUrl, model, temperature, inceptionReasoningEffort);
                     Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort})");
                     break;
+                case AIProvider.Gemini:
+                    if (string.IsNullOrEmpty(geminiKey))
+                        Debug.LogError("[QuizGenerator] Gemini API key not found. Place key in Resources/Config.json or set in Inspector.");
+                    client = new GeminiClient(geminiKey, geminiModel, temperature);
+                    Debug.Log($"[QuizGenerator] Using Gemini (model: {geminiModel})");
+                    break;
                 default:
                     client = new OllamaClient(ollamaUrl, ollamaModel, temperature);
                     Debug.Log($"[QuizGenerator] Using Ollama (model: {ollamaModel})");
                     break;
+            }
+
+            // フォールバック: プライマリが Gemini 以外でキーがあれば Gemini を予備に確保
+            if (aiProvider != AIProvider.Gemini && !string.IsNullOrEmpty(geminiKey))
+            {
+                fallbackClient = new GeminiClient(geminiKey, geminiModel, temperature);
+                Debug.Log($"[QuizGenerator] Gemini fallback armed (model: {geminiModel})");
+            }
+            else
+            {
+                fallbackClient = null;
             }
         }
 
@@ -270,100 +270,109 @@ namespace GemmaQuiz.AI
 
             Debug.Log($"[QuizGenerator] Generating {questionsPerGenre} questions for: {displayName}");
 
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            // プライマリで試行 → 失敗時はフォールバック (Gemini) で再試行
+            var primaryResult = await TryGenerateWithClient(client, buildPrompt, maxRetries, "primary");
+            if (primaryResult.Success)
+            {
+                FinishSuccess(primaryResult.QuestionSet);
+                return;
+            }
+
+            if (fallbackClient != null)
+            {
+                Debug.LogWarning($"[QuizGenerator] Primary generation failed, trying Gemini fallback: {primaryResult.ErrorMessage}");
+                OnGenerationProgress?.Invoke(0.1f);
+                var fallbackResult = await TryGenerateWithClient(fallbackClient, buildPrompt, Mathf.Min(3, maxRetries), "fallback(Gemini)");
+                if (fallbackResult.Success)
+                {
+                    FinishSuccess(fallbackResult.QuestionSet);
+                    return;
+                }
+
+                var combined = $"primary: {primaryResult.ErrorMessage} / fallback: {fallbackResult.ErrorMessage}";
+                Debug.LogError($"[QuizGenerator] Both primary and fallback failed: {combined}");
+                IsGenerating = false;
+                OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {fallbackResult.ErrorMessage}");
+                return;
+            }
+
+            IsGenerating = false;
+            OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {primaryResult.ErrorMessage}");
+        }
+
+        private void FinishSuccess(QuizQuestionSet questionSet)
+        {
+            OnGenerationProgress?.Invoke(1f);
+            Debug.Log($"[QuizGenerator] Successfully generated {questionSet.questions.Count} questions");
+            LastGeneratedQuestions = questionSet;
+            IsGenerating = false;
+            OnGenerationComplete?.Invoke(questionSet);
+        }
+
+        private struct GenerationAttemptResult
+        {
+            public bool Success;
+            public QuizQuestionSet QuestionSet;
+            public string ErrorMessage;
+        }
+
+        private async Task<GenerationAttemptResult> TryGenerateWithClient(
+            IQuizAIClient targetClient, Func<string> buildPrompt, int attempts, string label)
+        {
+            string lastError = "unknown";
+            for (int attempt = 1; attempt <= attempts; attempt++)
             {
                 try
                 {
-                    // Pass 1: 問題生成
-                    OnGenerationProgress?.Invoke(0.1f);
-                    var prompt = buildPrompt();
-
                     OnGenerationProgress?.Invoke(0.15f);
-                    var responseJson = await client.GenerateAsync(prompt, QuizSchema);
+                    var prompt = buildPrompt();
+                    var responseJson = await targetClient.GenerateAsync(prompt, QuizSchema);
 
                     OnGenerationProgress?.Invoke(0.5f);
                     var questionSet = ParseResponse(responseJson);
 
                     if (questionSet == null || questionSet.questions == null || questionSet.questions.Count == 0)
-                    {
                         throw new Exception("生成された問題が空です");
-                    }
 
-                    // 規定数に満たない場合はリトライ。ただし最終試行では最低ラインを受容。
-                    bool isLastAttempt = attempt >= maxRetries;
+                    bool isLastAttempt = attempt >= attempts;
                     int minAcceptable = Mathf.Max(1, questionsPerGenre / 2);
                     if (questionSet.questions.Count < questionsPerGenre && !isLastAttempt)
-                    {
                         throw new Exception($"問題数が規定未達 ({questionSet.questions.Count}/{questionsPerGenre}) - リトライ");
-                    }
                     if (isLastAttempt && questionSet.questions.Count < minAcceptable)
-                    {
                         throw new Exception($"問題数が最低ラインも未達: {questionSet.questions.Count}/{questionsPerGenre}");
-                    }
                     if (questionSet.questions.Count < questionsPerGenre)
-                    {
                         Debug.LogWarning($"[QuizGenerator] 問題数が期待値より少ない: {questionSet.questions.Count}/{questionsPerGenre} (最終試行のため続行)");
-                    }
 
-                    // Pass 2: AI検証（有効時）
                     if (enableValidationPass)
                     {
                         OnGenerationProgress?.Invoke(0.55f);
                         Debug.Log("[QuizGenerator] Running validation pass...");
-
                         var validationPrompt = QuizPromptBuilder.BuildValidation(responseJson);
-                        var validatedJson = await client.GenerateAsync(validationPrompt, QuizSchema);
-
+                        var validatedJson = await targetClient.GenerateAsync(validationPrompt, QuizSchema);
                         OnGenerationProgress?.Invoke(0.85f);
-
                         var validatedSet = ParseResponse(validatedJson);
                         if (validatedSet != null && validatedSet.questions != null && validatedSet.questions.Count > 0)
-                        {
                             questionSet = validatedSet;
-                            Debug.Log("[QuizGenerator] Validation pass complete.");
-                        }
                         else
-                        {
                             Debug.LogWarning("[QuizGenerator] Validation pass returned empty, using original.");
-                        }
                     }
 
-                    // 新フォーマット (answer + wrongs) を choices + correct_index に変換 + シャッフル
                     ConvertRawToChoices(questionSet);
-
-                    // テキストサニタイズ ($記号やLaTeX記法の除去)
                     SanitizeQuestions(questionSet);
-
-                    // 構造バリデーション
                     ValidateQuestions(questionSet);
-
-                    // 難易度割り当て
                     AssignDifficulty(questionSet);
 
-                    OnGenerationProgress?.Invoke(1f);
-
-                    Debug.Log($"[QuizGenerator] Successfully generated {questionSet.questions.Count} questions");
-                    LastGeneratedQuestions = questionSet;
-                    IsGenerating = false;
-                    OnGenerationComplete?.Invoke(questionSet);
-                    return;
+                    return new GenerationAttemptResult { Success = true, QuestionSet = questionSet };
                 }
                 catch (Exception e)
                 {
-                    Debug.LogWarning($"[QuizGenerator] Attempt {attempt}/{maxRetries} failed: {e.Message}");
-
-                    if (attempt >= maxRetries)
-                    {
-                        var errorMsg = $"問題の生成に失敗しました: {e.Message}";
-                        Debug.LogError($"[QuizGenerator] {errorMsg}");
-                        IsGenerating = false;
-                        OnGenerationFailed?.Invoke(errorMsg);
-                        return;
-                    }
-
-                    await Task.Delay(1000);
+                    lastError = e.Message;
+                    Debug.LogWarning($"[QuizGenerator][{label}] Attempt {attempt}/{attempts} failed: {e.Message}");
+                    if (attempt < attempts)
+                        await Task.Delay(1000);
                 }
             }
+            return new GenerationAttemptResult { Success = false, ErrorMessage = lastError };
         }
 
         /// <summary>

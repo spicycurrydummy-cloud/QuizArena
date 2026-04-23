@@ -89,5 +89,7 @@ debug.log
 *.log
 
 # Secrets
+Assets/Resources/Config.json
+Assets/Resources/Config.json.meta
 Assets/Resources/InceptionKey.txt
 Assets/Resources/InceptionKey.txt.meta

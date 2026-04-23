@@ -30,11 +30,13 @@ jobs:
             Library-WebGL-
             Library-
 
-      # Inception APIキーをResourcesに書き出し (コード経由でロードされる)
-      - name: Inject Inception API key
+      # AI設定 (Inception + Gemini キー) を Resources/Config.json に書き出し。
+      # GitHub Secret AI_CONFIG_JSON には以下のJSONをそのまま登録する:
+      #   {"inception_api_key":"sk_...","gemini_api_key":"AIza..."}
+      - name: Inject AI config
         run: |
           mkdir -p Assets/Resources
-          printf '%s' "${{ secrets.INCEPTION_API_KEY }}" > Assets/Resources/InceptionKey.txt
+          printf '%s' '${{ secrets.AI_CONFIG_JSON }}' > Assets/Resources/Config.json
 
       # Unity WebGL ビルド
       - uses: game-ci/unity-builder@v4
