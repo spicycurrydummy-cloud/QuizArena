@@ -14,9 +14,13 @@ namespace GemmaQuiz.AI
     {
         public string inception_api_key;
         public string gemini_api_key;
+        public string cerebras_api_key;
+        public string groq_api_key;
 
         public bool HasInceptionKey => !string.IsNullOrEmpty(inception_api_key);
         public bool HasGeminiKey => !string.IsNullOrEmpty(gemini_api_key);
+        public bool HasCerebrasKey => !string.IsNullOrEmpty(cerebras_api_key);
+        public bool HasGroqKey => !string.IsNullOrEmpty(groq_api_key);
 
         /// <summary>
         /// 設定を読み込む。優先順:
@@ -50,7 +54,7 @@ namespace GemmaQuiz.AI
             }
 #endif
 
-            if (!cfg.HasInceptionKey || !cfg.HasGeminiKey)
+            if (!cfg.HasInceptionKey || !cfg.HasGeminiKey || !cfg.HasCerebrasKey || !cfg.HasGroqKey)
             {
                 var asset = Resources.Load<TextAsset>("Config");
                 if (asset != null && !string.IsNullOrWhiteSpace(asset.text))
@@ -64,6 +68,10 @@ namespace GemmaQuiz.AI
                                 cfg.inception_api_key = parsed.inception_api_key;
                             if (!cfg.HasGeminiKey && parsed.HasGeminiKey)
                                 cfg.gemini_api_key = parsed.gemini_api_key;
+                            if (!cfg.HasCerebrasKey && parsed.HasCerebrasKey)
+                                cfg.cerebras_api_key = parsed.cerebras_api_key;
+                            if (!cfg.HasGroqKey && parsed.HasGroqKey)
+                                cfg.groq_api_key = parsed.groq_api_key;
                         }
                     }
                     catch (Exception e)

@@ -54,7 +54,18 @@ namespace GemmaQuiz.AI
         // Inspector上書き用フィールド（空なら Config.json から読む）
         [SerializeField] private string inceptionApiKey = "";
 
-        [Header("Gemini Settings (Fallback)")]
+        [Header("Fallback: Cerebras")]
+        [SerializeField] private string cerebrasUrl = "https://api.cerebras.ai/v1";
+        // Free tier で広くアクセスできるモデル。他候補: llama-4-scout-17b-16e-instruct, qwen-3-32b
+        [SerializeField] private string cerebrasModel = "llama3.1-8b";
+        [SerializeField] private string cerebrasApiKey = "";
+
+        [Header("Fallback: Groq (Llama)")]
+        [SerializeField] private string groqUrl = "https://api.groq.com/openai/v1";
+        [SerializeField] private string groqModel = "llama-3.3-70b-versatile";
+        [SerializeField] private string groqApiKey = "";
+
+        [Header("Fallback: Gemini Flash")]
         [SerializeField] private string geminiModel = "gemini-2.5-flash-lite";
         [SerializeField] private string geminiApiKey = "";
 
@@ -72,7 +83,8 @@ namespace GemmaQuiz.AI
         [SerializeField] private bool enableValidationPass = false;
 
         private IQuizAIClient client;
-        private IQuizAIClient fallbackClient; // Gemini fallback (null if primary is Gemini or key absent)
+        private readonly List<IQuizAIClient> fallbackClients = new();
+        private readonly List<string> fallbackLabels = new();
         private System.Random rng;
 
         // Ollama Structured Output 用の JSON Schema
@@ -121,6 +133,8 @@ namespace GemmaQuiz.AI
         {
             var config = AIConfig.Load();
             string geminiKey = string.IsNullOrEmpty(geminiApiKey) ? config.gemini_api_key : geminiApiKey;
+            string cerebrasKey = string.IsNullOrEmpty(cerebrasApiKey) ? config.cerebras_api_key : cerebrasApiKey;
+            string groqKey = string.IsNullOrEmpty(groqApiKey) ? config.groq_api_key : groqApiKey;
 
             switch (aiProvider)
             {
@@ -147,16 +161,32 @@ namespace GemmaQuiz.AI
                     break;
             }
 
-            // フォールバック: プライマリが Gemini 以外でキーがあれば Gemini を予備に確保
+            // フォールバック連鎖: Cerebras → Groq → Gemini Flash
+            fallbackClients.Clear();
+            fallbackLabels.Clear();
+
+            if (!string.IsNullOrEmpty(cerebrasKey))
+            {
+                fallbackClients.Add(new OpenAIChatClient(cerebrasKey, cerebrasUrl, cerebrasModel, temperature, 4096, "Cerebras"));
+                fallbackLabels.Add($"Cerebras({cerebrasModel})");
+            }
+
+            if (!string.IsNullOrEmpty(groqKey))
+            {
+                fallbackClients.Add(new OpenAIChatClient(groqKey, groqUrl, groqModel, temperature, 4096, "Groq"));
+                fallbackLabels.Add($"Groq({groqModel})");
+            }
+
             if (aiProvider != AIProvider.Gemini && !string.IsNullOrEmpty(geminiKey))
             {
-                fallbackClient = new GeminiClient(geminiKey, geminiModel, temperature);
-                Debug.Log($"[QuizGenerator] Gemini fallback armed (model: {geminiModel})");
+                fallbackClients.Add(new GeminiClient(geminiKey, geminiModel, temperature));
+                fallbackLabels.Add($"Gemini({geminiModel})");
             }
+
+            if (fallbackClients.Count > 0)
+                Debug.Log($"[QuizGenerator] Fallback chain armed: {string.Join(" → ", fallbackLabels)}");
             else
-            {
-                fallbackClient = null;
-            }
+                Debug.Log("[QuizGenerator] No fallback clients configured.");
         }
 
         /// <summary>
@@ -270,7 +300,7 @@ namespace GemmaQuiz.AI
 
             Debug.Log($"[QuizGenerator] Generating {questionsPerGenre} questions for: {displayName}");
 
-            // プライマリで試行 → 失敗時はフォールバック (Gemini) で再試行
+            // プライマリで試行 → 失敗時はフォールバック連鎖 (Cerebras → Groq → Gemini)
             var primaryResult = await TryGenerateWithClient(client, buildPrompt, maxRetries, "primary");
             if (primaryResult.Success)
             {
@@ -278,26 +308,24 @@ namespace GemmaQuiz.AI
                 return;
             }
 
-            if (fallbackClient != null)
+            string lastError = primaryResult.ErrorMessage;
+            for (int i = 0; i < fallbackClients.Count; i++)
             {
-                Debug.LogWarning($"[QuizGenerator] Primary generation failed, trying Gemini fallback: {primaryResult.ErrorMessage}");
+                var label = fallbackLabels[i];
+                Debug.LogWarning($"[QuizGenerator] Trying fallback {i + 1}/{fallbackClients.Count}: {label} (last error: {lastError})");
                 OnGenerationProgress?.Invoke(0.1f);
-                var fallbackResult = await TryGenerateWithClient(fallbackClient, buildPrompt, Mathf.Min(3, maxRetries), "fallback(Gemini)");
-                if (fallbackResult.Success)
+                var result = await TryGenerateWithClient(fallbackClients[i], buildPrompt, 2, $"fallback({label})");
+                if (result.Success)
                 {
-                    FinishSuccess(fallbackResult.QuestionSet);
+                    FinishSuccess(result.QuestionSet);
                     return;
                 }
-
-                var combined = $"primary: {primaryResult.ErrorMessage} / fallback: {fallbackResult.ErrorMessage}";
-                Debug.LogError($"[QuizGenerator] Both primary and fallback failed: {combined}");
-                IsGenerating = false;
-                OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {fallbackResult.ErrorMessage}");
-                return;
+                lastError = result.ErrorMessage;
             }
 
+            Debug.LogError($"[QuizGenerator] All providers failed. Last error: {lastError}");
             IsGenerating = false;
-            OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {primaryResult.ErrorMessage}");
+            OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {lastError}");
         }
 
         private void FinishSuccess(QuizQuestionSet questionSet)
@@ -368,11 +396,36 @@ namespace GemmaQuiz.AI
                 {
                     lastError = e.Message;
                     Debug.LogWarning($"[QuizGenerator][{label}] Attempt {attempt}/{attempts} failed: {e.Message}");
+
+                    // レート/クォータ系はリトライしても通らないので即失敗させてフォールバックに切り替え
+                    if (IsQuotaOrRateLimitError(e.Message))
+                    {
+                        Debug.LogWarning($"[QuizGenerator][{label}] Rate limit / quota detected, skipping remaining retries.");
+                        break;
+                    }
+
                     if (attempt < attempts)
                         await Task.Delay(1000);
                 }
             }
             return new GenerationAttemptResult { Success = false, ErrorMessage = lastError };
+        }
+
+        private static bool IsQuotaOrRateLimitError(string message)
+        {
+            if (string.IsNullOrEmpty(message)) return false;
+            var m = message.ToLowerInvariant();
+            // HTTPステータスコード
+            if (m.Contains("429") || m.Contains("402") || m.Contains("403")) return true;
+            // よくあるキーワード
+            if (m.Contains("rate limit")) return true;
+            if (m.Contains("rate_limit")) return true;
+            if (m.Contains("quota")) return true;
+            if (m.Contains("insufficient") && (m.Contains("credit") || m.Contains("balance") || m.Contains("quota"))) return true;
+            if (m.Contains("payment required") || m.Contains("payment_required")) return true;
+            if (m.Contains("billing")) return true;
+            if (m.Contains("exceeded")) return true;
+            return false;
         }
 
         /// <summary>
