@@ -226,14 +226,25 @@ namespace GemmaQuiz.Network
             ReturnToTitle();
         }
 
+        // OnDisconnectedFromServer と OnShutdown が同じフレームで両方呼ばれても二重ロードしないためのフラグ
+        private bool returningToTitle;
+
         private void ReturnToTitle()
         {
-            var currentScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
-            if (currentScene != "TitleScene")
-            {
-                Debug.Log("[NetworkManager] Returning to TitleScene");
-                UnityEngine.SceneManagement.SceneManager.LoadScene("TitleScene");
-            }
+            if (returningToTitle) return;
+            var currentScene = SceneManager.GetActiveScene().name;
+            if (currentScene == "TitleScene") return;
+
+            returningToTitle = true;
+            Debug.Log("[NetworkManager] Returning to TitleScene");
+            SceneManager.sceneLoaded += OnTitleReturnSceneLoaded;
+            SceneManager.LoadScene("TitleScene");
+        }
+
+        private void OnTitleReturnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            SceneManager.sceneLoaded -= OnTitleReturnSceneLoaded;
+            returningToTitle = false;
         }
 
         public void OnConnectRequest(NetworkRunner runner, NetworkRunnerCallbackArgs.ConnectRequest request, byte[] token)

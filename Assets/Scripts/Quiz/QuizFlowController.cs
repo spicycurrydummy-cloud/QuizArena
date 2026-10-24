@@ -10,8 +10,8 @@ namespace GemmaQuiz.Quiz
 {
     /// <summary>
     /// QuizScene上でゲームフローを制御する。
-    /// プレイヤーの選択ジャンル + ランダムジャンルでラウンド順を構築し、
-    /// 各ラウンドで問題生成 → 出題 → 次のラウンドへ進行する。
+    /// プレイヤーの選択ジャンルでラウンド順を構築し、各ラウンドで 問題生成 → 出題 → 次のラウンド と進行する。
+    /// ホストが進行し、クライアントは QuizManager の [Networked] 状態 (IsLoadingRound 等) を見て表示を切り替える。
     /// </summary>
     public class QuizFlowController : MonoBehaviour
     {
@@ -20,41 +20,36 @@ namespace GemmaQuiz.Quiz
         [SerializeField] private Text loadingText;
         [SerializeField] private Image loadingBar;
 
-        [Header("Round Info")]
-        [SerializeField] private GameObject roundInfoPanel;
-        [SerializeField] private Text roundInfoText;
+        [Header("Timing")]
+        [SerializeField] private float roundStartDelay = 0.8f;
+        [SerializeField] private float roundEndDelay = 3f;
+        [SerializeField] private float failedRoundSkipDelay = 2.5f;
 
-        private List<RoundInfo> rounds = new();
+        private readonly List<RoundInfo> rounds = new();
         private int currentRoundIndex = -1;
         private QuizUI quizUI;
-        private bool subscribedToQuizManager;
         private bool lastObservedLoadingState = true;
 
-        // 擬似プログレスバー用（API同期呼び出しで中間進捗が取れないので時間ベース）
+        // 擬似プログレスバー用（API呼び出し中は中間進捗が取れないので時間ベースで進める）
         private float loadingStartTime;
         private const float ExpectedLoadSeconds = 12f;
-        private float loadingRealProgress; // OnGenerationProgress から届いた実値
+        private float loadingRealProgress;
 
         private System.Collections.IEnumerator Start()
         {
-            if (loadingPanel != null) loadingPanel.SetActive(false);
-            if (roundInfoPanel != null) roundInfoPanel.SetActive(false);
-
             quizUI = FindAnyObjectByType<QuizUI>();
             if (quizUI != null) quizUI.SetContentVisible(false);
-
-            ShowLoading("問題を準備中...");
+            ApplyLoadingState(true);
 
             var nm = NetworkManager.Instance;
             if (nm == null || nm.Runner == null) yield break;
 
-            // QuizManager (シーン上 NetworkObject) の Spawned 完了を待つ
-            // 待たないと StartNextRound での [Networked] フィールド書き込みが取りこぼされ、
-            // 初回ラウンドだけジャンル名等が空のままクライアントに伝わる
-            float waitTimeout = 0f;
-            while (QuizManager.Instance == null && waitTimeout < 5f)
+            // QuizManager (シーン上 NetworkObject) の Spawned 完了を待つ。
+            // 待たないと StartNextRound での [Networked] 書き込みが取りこぼされ、初回ラウンドの情報が空のままクライアントに伝わる
+            float waited = 0f;
+            while (QuizManager.Instance == null && waited < 5f)
             {
-                waitTimeout += Time.deltaTime;
+                waited += Time.deltaTime;
                 yield return null;
             }
             if (QuizManager.Instance == null)
@@ -62,30 +57,25 @@ namespace GemmaQuiz.Quiz
                 Debug.LogError("[QuizFlowController] QuizManager.Instance did not appear within timeout");
                 yield break;
             }
-            // ホスト側は StateAuthority が確立されるまで待つ
-            if (nm.IsHost)
+
+            if (!nm.IsHost) yield break;
+
+            while (!QuizManager.Instance.HasStateAuthority && waited < 5f)
             {
-                while (!QuizManager.Instance.HasStateAuthority && waitTimeout < 5f)
-                {
-                    waitTimeout += Time.deltaTime;
-                    yield return null;
-                }
+                waited += Time.deltaTime;
+                yield return null;
             }
 
-            if (nm.IsHost)
-            {
-                BuildRoundOrder();
-                StartNextRound();
-            }
+            BuildRoundOrder();
+            StartNextRound();
         }
 
         private void Update()
         {
-            TrySubscribeToQuizManager();
-
-            // 万一イベントを取り逃した時のための同期: ネットワーク状態と表示が乖離していたら直す
+            // ネットワーク状態 (IsLoadingRound) と表示を同期する
             var qm = QuizManager.Instance;
             if (qm == null) return;
+
             bool loading = qm.IsLoadingRound;
             if (loading != lastObservedLoadingState)
             {
@@ -102,29 +92,11 @@ namespace GemmaQuiz.Quiz
         private void UpdateLoadingBar()
         {
             if (loadingBar == null) return;
-            // 経過時間から推定(0→0.9 over ExpectedLoadSeconds) と 実進捗値 のうち大きい方を採用
+            // 経過時間からの推定(0→0.9) と 実進捗値 のうち大きい方を採用
             float elapsed = Mathf.Max(0f, Time.time - loadingStartTime);
             float estimated = Mathf.Min(0.9f, elapsed / ExpectedLoadSeconds * 0.9f);
             float target = Mathf.Max(estimated, loadingRealProgress);
             loadingBar.fillAmount = Mathf.MoveTowards(loadingBar.fillAmount, target, Time.deltaTime * 0.6f);
-        }
-
-        private void TrySubscribeToQuizManager()
-        {
-            if (subscribedToQuizManager) return;
-            var qm = QuizManager.Instance;
-            if (qm == null) return;
-            qm.OnRoundLoadingChanged += HandleRoundLoadingChanged;
-            subscribedToQuizManager = true;
-            // 初回適用
-            lastObservedLoadingState = qm.IsLoadingRound;
-            ApplyLoadingState(qm.IsLoadingRound);
-        }
-
-        private void HandleRoundLoadingChanged(bool isLoading)
-        {
-            lastObservedLoadingState = isLoading;
-            ApplyLoadingState(isLoading);
         }
 
         private void ApplyLoadingState(bool isLoading)
@@ -132,7 +104,6 @@ namespace GemmaQuiz.Quiz
             if (isLoading)
             {
                 if (quizUI != null) quizUI.SetContentVisible(false);
-                if (roundInfoPanel != null) roundInfoPanel.SetActive(false);
                 if (loadingPanel != null) loadingPanel.SetActive(true);
                 loadingStartTime = Time.time;
                 loadingRealProgress = 0f;
@@ -142,38 +113,48 @@ namespace GemmaQuiz.Quiz
             else
             {
                 if (loadingPanel != null) loadingPanel.SetActive(false);
-                if (roundInfoPanel != null) roundInfoPanel.SetActive(false);
                 if (quizUI != null) quizUI.SetContentVisible(true);
             }
         }
 
+        /// <summary>
+        /// ローディング画面のテキスト。ラウンド番号・ジャンル・誰の選択かを [Networked] 値から組み立てる。
+        /// </summary>
         private void UpdateLoadingPanelText()
         {
             var qm = QuizManager.Instance;
             if (qm == null || loadingText == null) return;
+
             string genreName = qm.LoadingRoundGenreName.ToString();
+            if (string.IsNullOrEmpty(genreName))
+            {
+                loadingText.text = "問題を準備中...";
+                return;
+            }
 
-            string newText = string.IsNullOrEmpty(genreName)
-                ? "問題を準備中..."
-                : $"{genreName} の問題を生成中...";
-
-            loadingText.text = newText;
+            var sb = new System.Text.StringBuilder();
+            if (qm.TotalRounds > 0)
+                sb.Append($"ラウンド {qm.CurrentRoundIndex + 1} / {qm.TotalRounds}\n");
+            sb.Append($"{genreName} の問題を生成中...");
+            string owner = qm.CurrentRoundOwnerName.ToString();
+            if (!string.IsNullOrEmpty(owner))
+                sb.Append($"\n<size=60%>({owner} の選択)</size>");
+            loadingText.text = sb.ToString();
         }
 
         /// <summary>
-        /// プレイヤーの選択ジャンルからラウンド順を構築する。
+        /// プレイヤーの選択ジャンルからラウンド順を構築する (ホストのみ)。
         /// </summary>
         private void BuildRoundOrder()
         {
             rounds.Clear();
 
-            // プレイヤー選択ジャンルを追加（LobbySync同期データを使用）
-            var sync = Network.LobbySync.Instance;
+            var sync = LobbySync.Instance;
             if (sync != null)
             {
-                for (int i = 0; i < 8; i++)
+                for (int i = 0; i < LobbySync.MaxSlots; i++)
                 {
-                    if (sync.PlayerSlotIds[i] == -1) continue;
+                    if (sync.IsSlotEmpty(i)) continue;
                     int encoded = sync.SelectedGenres[i];
                     if (encoded < 0) continue;
 
@@ -181,36 +162,32 @@ namespace GemmaQuiz.Quiz
                     string playerName = sync.PlayerNames[i].ToString();
                     if (string.IsNullOrEmpty(playerName)) playerName = $"Player {i}";
 
-                    string customText = "";
-                    if (GenreEncoding.IsCustomGenre(encoded))
-                        customText = sync.CustomGenreTexts[i].ToString();
-
+                    bool isCustom = GenreEncoding.IsCustomGenre(encoded);
                     rounds.Add(new RoundInfo
                     {
-                        genre = GenreEncoding.IsCustomGenre(encoded) ? QuizGenre.NonGenre : (QuizGenre)genreIdx,
+                        genre = isCustom ? QuizGenre.NonGenre : (QuizGenre)genreIdx,
                         subGenreIndex = subIdx,
-                        customGenreText = customText,
-                        ownerName = playerName,
-                        isRandom = false
+                        customGenreText = isCustom ? sync.CustomGenreTexts[i].ToString() : "",
+                        ownerName = playerName
                     });
                 }
             }
             else
             {
                 // フォールバック: SessionManagerのローカルデータから
-                var session = Network.SessionManager.Instance;
+                var session = SessionManager.Instance;
                 if (session != null)
                 {
                     foreach (var player in session.GetSortedPlayerList())
                     {
                         if (player.selectedGenreIndex < 0) continue;
+                        bool isCustom = player.selectedGenreIndex == GenreEncoding.CUSTOM_GENRE_CODE;
                         rounds.Add(new RoundInfo
                         {
-                            genre = (QuizGenre)player.selectedGenreIndex,
+                            genre = isCustom ? QuizGenre.NonGenre : (QuizGenre)player.selectedGenreIndex,
                             subGenreIndex = player.selectedSubGenreIndex,
-                            customGenreText = player.customGenreText,
-                            ownerName = player.playerName,
-                            isRandom = false
+                            customGenreText = isCustom ? player.customGenreText : "",
+                            ownerName = player.playerName
                         });
                     }
                 }
@@ -218,13 +195,8 @@ namespace GemmaQuiz.Quiz
 
             Debug.Log($"[QuizFlowController] Round order ({rounds.Count} rounds):");
             for (int i = 0; i < rounds.Count; i++)
-            {
-                var r = rounds[i];
-                var rName = !string.IsNullOrEmpty(r.customGenreText) ? r.customGenreText : GenreEncoding.GetDisplayName((int)r.genre, r.subGenreIndex);
-                Debug.Log($"  Round {i + 1}: {rName} ({r.ownerName})");
-            }
+                Debug.Log($"  Round {i + 1}: {rounds[i].DisplayName} ({rounds[i].ownerName})");
 
-            // ネットワーク状態に総ラウンド数を書き込む
             var qm = QuizManager.Instance;
             if (qm != null && qm.HasStateAuthority)
                 qm.TotalRounds = rounds.Count;
@@ -236,7 +208,8 @@ namespace GemmaQuiz.Quiz
 
             if (currentRoundIndex >= rounds.Count)
             {
-                // 全ラウンド終了 → QuizManagerが最終結果を処理
+                // 全ラウンド終了 (通常は HandleRoundFinished から LoadResultScene に行くのでここには来ない)
+                LoadResultScene();
                 return;
             }
 
@@ -250,26 +223,20 @@ namespace GemmaQuiz.Quiz
             if (qm != null && qm.HasStateAuthority)
             {
                 qm.CurrentRoundIndex = currentRoundIndex;
-                if (!string.IsNullOrEmpty(round.customGenreText))
-                    qm.LoadingRoundGenreName = round.customGenreText;
-                else
-                    qm.LoadingRoundGenreName = GenreEncoding.GetDisplayName((int)round.genre, round.subGenreIndex);
-                qm.CurrentRoundOwnerName = round.isRandom ? "ランダム" : round.ownerName;
+                qm.LoadingRoundGenreName = round.DisplayName;
+                qm.CurrentRoundOwnerName = round.ownerName;
                 qm.IsLoadingRound = true;
             }
 
-            // 自前でも即座にローディング画面に切り替え
+            // ホスト自身も即座にローディング画面へ
+            lastObservedLoadingState = true;
             ApplyLoadingState(true);
 
-            // 問題生成を即開始
-            StartGeneration();
+            StartGeneration(round);
         }
 
-        private void StartGeneration()
+        private void StartGeneration(RoundInfo round)
         {
-            var round = rounds[currentRoundIndex];
-            UpdateLoadingPanelText();
-
             var generator = QuizGenerator.Instance;
             if (generator == null)
             {
@@ -289,7 +256,6 @@ namespace GemmaQuiz.Quiz
 
         private void HandleProgress(float progress)
         {
-            // 実進捗は UpdateLoadingBar で使う（経過時間ベースと合わせて大きい方を採用）
             loadingRealProgress = progress;
         }
 
@@ -307,57 +273,45 @@ namespace GemmaQuiz.Quiz
                     QuizGenerator.Instance?.PreGenerateAsync(next.genre, next.subGenreIndex);
             }
 
-            Invoke(nameof(StartQuizRound), 0.8f);
+            Invoke(nameof(StartQuizRound), roundStartDelay);
         }
 
-private void HandleGenerationFailed(string error)
+        private void HandleGenerationFailed(string error)
         {
             UnsubscribeGenerator();
             Debug.LogWarning($"[QuizFlowController] Generation failed for round {currentRoundIndex + 1}: {error}");
 
             bool hasMoreRounds = currentRoundIndex + 1 < rounds.Count;
-            string skipMsg = hasMoreRounds
+            SetLoadingText(hasMoreRounds
                 ? "問題生成に失敗しました。次のラウンドへスキップします..."
-                : "問題生成に失敗しました。結果画面へ移動します...";
-            SetLoadingText(skipMsg);
+                : "問題生成に失敗しました。結果画面へ移動します...");
 
-            CancelInvoke(nameof(SkipFailedRound));
+            CancelInvoke(nameof(StartNextRound));
             CancelInvoke(nameof(LoadResultScene));
-            if (hasMoreRounds)
-                Invoke(nameof(SkipFailedRound), 2.5f);
-            else
-                Invoke(nameof(LoadResultScene), 2.5f);
+            Invoke(hasMoreRounds ? nameof(StartNextRound) : nameof(LoadResultScene), failedRoundSkipDelay);
         }
-
-private void SkipFailedRound()
-        {
-            var nm = NetworkManager.Instance;
-            if (nm == null || !nm.IsHost) return;
-            StartNextRound();
-        }
-
 
         private void StartQuizRound()
         {
             var quizManager = QuizManager.Instance;
             var generator = QuizGenerator.Instance;
 
-            if (quizManager != null && generator != null && generator.LastGeneratedQuestions != null)
-            {
-                quizManager.OnQuizFinished -= HandleRoundFinished;
-                quizManager.OnQuizFinished += HandleRoundFinished;
-
-                // ロード完了をクライアントへ通知 (これでクライアント側もUI切り替わる)
-                if (quizManager.HasStateAuthority)
-                    quizManager.IsLoadingRound = false;
-
-                ApplyLoadingState(false);
-                quizManager.StartQuiz(generator.LastGeneratedQuestions);
-            }
-            else
+            if (quizManager == null || generator == null || generator.LastGeneratedQuestions == null)
             {
                 Debug.LogError("[QuizFlowController] QuizManager or questions not available");
+                return;
             }
+
+            quizManager.OnQuizFinished -= HandleRoundFinished;
+            quizManager.OnQuizFinished += HandleRoundFinished;
+
+            // ロード完了をクライアントへ通知 (これでクライアント側もUIが切り替わる)
+            if (quizManager.HasStateAuthority)
+                quizManager.IsLoadingRound = false;
+
+            lastObservedLoadingState = false;
+            ApplyLoadingState(false);
+            quizManager.StartQuiz(generator.LastGeneratedQuestions);
         }
 
         private void HandleRoundFinished(List<PlayerScoreEntry> scores)
@@ -366,15 +320,7 @@ private void SkipFailedRound()
             if (quizManager != null)
                 quizManager.OnQuizFinished -= HandleRoundFinished;
 
-            if (currentRoundIndex + 1 < rounds.Count)
-            {
-                Invoke(nameof(StartNextRound), 3f);
-            }
-            else
-            {
-                // 全ラウンド終了 - ResultSceneへ遷移
-                Invoke(nameof(LoadResultScene), 3f);
-            }
+            Invoke(currentRoundIndex + 1 < rounds.Count ? nameof(StartNextRound) : nameof(LoadResultScene), roundEndDelay);
         }
 
         private void LoadResultScene()
@@ -382,15 +328,6 @@ private void SkipFailedRound()
             var nm = NetworkManager.Instance;
             if (nm != null && nm.IsHost)
                 nm.LoadScene("ResultScene");
-            else
-                UnityEngine.SceneManagement.SceneManager.LoadScene("ResultScene");
-        }
-
-        private void ShowLoading(string text)
-        {
-            if (loadingPanel != null)
-                loadingPanel.SetActive(true);
-            SetLoadingText(text);
         }
 
         private void SetLoadingText(string text)
@@ -414,10 +351,7 @@ private void SkipFailedRound()
             UnsubscribeGenerator();
             var quizManager = QuizManager.Instance;
             if (quizManager != null)
-            {
                 quizManager.OnQuizFinished -= HandleRoundFinished;
-                quizManager.OnRoundLoadingChanged -= HandleRoundLoadingChanged;
-            }
         }
 
         private struct RoundInfo
@@ -426,7 +360,10 @@ private void SkipFailedRound()
             public int subGenreIndex;
             public string customGenreText;
             public string ownerName;
-            public bool isRandom;
+
+            public string DisplayName => !string.IsNullOrEmpty(customGenreText)
+                ? customGenreText
+                : GenreEncoding.GetDisplayName((int)genre, subGenreIndex);
         }
     }
 }

@@ -19,6 +19,9 @@ namespace GemmaQuiz.Quiz
         [Networked] public NetworkString<_256> CurrentQuestionText { get; set; }
         [Networked, Capacity(4)] public NetworkArray<NetworkString<_64>> CurrentChoices { get; }
         [Networked] public int CurrentQuestionIndex { get; set; }
+        // 出題ごとにインクリメント。ラウンドをまたいで同じ index が続いても (1問ラウンド等)
+        // クライアント側で確実に「新しい問題」を検知できるようにする
+        [Networked] public int QuestionSerial { get; set; }
         [Networked] public int TotalQuestions { get; set; }
         [Networked] public int RevealedCorrectIndex { get; set; } // -1 = まだ非表示
         [Networked] public NetworkBool IsAcceptingAnswers { get; set; }
@@ -49,7 +52,7 @@ namespace GemmaQuiz.Quiz
         private float questionStartTime;
         private bool localShowingResultFlag;
         private int localAnswerCountLast;
-        private int lastQuestionIndexShown = -2;
+        private int lastQuestionSerialShown;
 
         public float RemainingTime => QuestionTimer.IsRunning ? QuestionTimer.RemainingTime(Runner) ?? 0f : 0f;
 
@@ -59,7 +62,6 @@ namespace GemmaQuiz.Quiz
         public event Action<QuestionResult> OnQuestionResult;
         public event Action<List<PlayerScoreEntry>> OnQuizFinished;
         public event Action<Fusion.PlayerRef, string, int> OnPlayerAnswered;
-        public event Action<bool> OnRoundLoadingChanged; // true=loading, false=ready
 
         private ChangeDetector changeDetector;
 
@@ -120,10 +122,10 @@ namespace GemmaQuiz.Quiz
             {
                 switch (change)
                 {
-                    case nameof(CurrentQuestionIndex):
-                        if (CurrentQuestionIndex != lastQuestionIndexShown && CurrentQuestionIndex >= 0 && CurrentQuestionIndex < TotalQuestions)
+                    case nameof(QuestionSerial):
+                        if (QuestionSerial != lastQuestionSerialShown && CurrentQuestionIndex >= 0 && CurrentQuestionIndex < TotalQuestions)
                         {
-                            lastQuestionIndexShown = CurrentQuestionIndex;
+                            lastQuestionSerialShown = QuestionSerial;
                             localAnswerCountLast = 0; // 解答カウントをリセット
                             OnQuestionStarted?.Invoke(CurrentQuestion, CurrentQuestionIndex);
                         }
@@ -172,9 +174,6 @@ namespace GemmaQuiz.Quiz
                             BuildAndFireQuizFinished();
                         }
                         break;
-                    case nameof(IsLoadingRound):
-                        OnRoundLoadingChanged?.Invoke(IsLoadingRound);
-                        break;
                 }
             }
         }
@@ -219,6 +218,7 @@ namespace GemmaQuiz.Quiz
             }
 
             CurrentQuestionIndex = nextIndex;
+            QuestionSerial++;
             // クリア
             for (int i = 0; i < 8; i++)
             {
@@ -260,6 +260,9 @@ namespace GemmaQuiz.Quiz
         {
             if (!IsAcceptingAnswers) return;
             int playerId = info.Source.IsRealPlayer ? info.Source.PlayerId : Runner.LocalPlayer.PlayerId;
+
+            // クライアント申告値なので制限時間内にクランプ
+            elapsedMs = Mathf.Clamp(elapsedMs, 0, Mathf.RoundToInt(ScoreCalculator.TimeLimit * 1000));
 
             // 重複チェック
             for (int i = 0; i < AnswerCount; i++)
@@ -437,12 +440,6 @@ namespace GemmaQuiz.Quiz
             finalScores.Sort((a, b) => b.totalScore.CompareTo(a.totalScore));
             OnQuizFinished?.Invoke(finalScores);
         }
-    }
-
-    public struct PlayerAnswer
-    {
-        public int choiceIndex;
-        public float elapsedTime;
     }
 
     [Serializable]

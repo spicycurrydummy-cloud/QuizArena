@@ -216,6 +216,22 @@ namespace GemmaQuiz.Network
             OnPlayerListChanged?.Invoke();
         }
 
+        /// <summary>
+        /// プレイヤーは残したまま、スコアとジャンル選択だけをリセットする (ロビー入室時)。
+        /// </summary>
+        public void ResetRoundState()
+        {
+            foreach (var info in players.Values)
+            {
+                info.totalScore = 0;
+                info.selectedGenreIndex = -1;
+                info.selectedSubGenreIndex = 0;
+                info.customGenreText = "";
+                info.isReady = false;
+            }
+            OnPlayerListChanged?.Invoke();
+        }
+
         public void SetPlayerGenre(PlayerRef player, int genreIndex)
         {
             if (players.TryGetValue(player, out var info))

@@ -14,22 +14,27 @@ namespace GemmaQuiz.Network
 
         public static event System.Action OnSyncChanged;
 
+        public const int MaxSlots = 8;
+
         // 空スロットマーカー (PlayerIdは>=0なのでint.MinValueは衝突しない)
         private const int EMPTY_SLOT = int.MinValue;
 
         // プレイヤースロット8人分
-        [Networked, Capacity(8)] public NetworkArray<int> SelectedGenres { get; }
-        [Networked, Capacity(8)] public NetworkArray<NetworkString<_32>> PlayerNames { get; }
-        [Networked, Capacity(8)] public NetworkArray<int> PlayerSlotIds { get; }
-        [Networked, Capacity(8)] public NetworkArray<NetworkString<_64>> CustomGenreTexts { get; }
+        [Networked, Capacity(MaxSlots)] public NetworkArray<int> SelectedGenres { get; }
+        [Networked, Capacity(MaxSlots)] public NetworkArray<NetworkString<_32>> PlayerNames { get; }
+        [Networked, Capacity(MaxSlots)] public NetworkArray<int> PlayerSlotIds { get; }
+        [Networked, Capacity(MaxSlots)] public NetworkArray<NetworkString<_64>> CustomGenreTexts { get; }
         [Networked] public int HostPlayerId { get; set; } = -1;
+
+        // ホストが設定した「1ジャンルあたりの問題数」。クライアントの表示用。
+        [Networked] public int QuestionsPerGenre { get; set; }
 
         private ChangeDetector changeDetector;
 
         public override void Render()
         {
             if (changeDetector == null) return;
-            foreach (var changed in changeDetector.DetectChanges(this))
+            foreach (var _ in changeDetector.DetectChanges(this))
             {
                 OnSyncChanged?.Invoke();
                 break;
@@ -43,7 +48,7 @@ namespace GemmaQuiz.Network
 
             if (HasStateAuthority)
             {
-                for (int i = 0; i < 8; i++)
+                for (int i = 0; i < MaxSlots; i++)
                 {
                     SelectedGenres.Set(i, -1);
                     PlayerNames.Set(i, "");
@@ -51,12 +56,20 @@ namespace GemmaQuiz.Network
                     CustomGenreTexts.Set(i, "");
                 }
                 HostPlayerId = Runner.LocalPlayer.PlayerId;
+
+                var gen = AI.QuizGenerator.Instance;
+                QuestionsPerGenre = gen != null ? gen.QuestionsPerGenre : 5;
             }
+
+            // ロビーに入った時点で前回ゲームのスコア/選択をリセット (ホスト・クライアント共通)
+            SessionManager.Instance?.ResetRoundState();
 
             Debug.Log($"[LobbySync] Spawned (HasStateAuthority={HasStateAuthority}, LocalPlayer={Runner.LocalPlayer.PlayerId})");
 
-            // 即座に名前登録（シーン遷移前に確実に送信）
-            RegisterMyName();
+            // 即座に名前登録
+            var nm = NetworkManager.Instance;
+            if (nm != null)
+                RpcRegisterPlayer(nm.LocalPlayerName ?? "");
         }
 
         public override void Despawned(NetworkRunner runner, bool hasState)
@@ -64,20 +77,32 @@ namespace GemmaQuiz.Network
             if (Instance == this) Instance = null;
         }
 
-        private void RegisterMyName()
+        public bool IsSlotEmpty(int slot) => PlayerSlotIds[slot] == EMPTY_SLOT;
+
+        public int FindSlot(int playerId)
         {
-            var nm = NetworkManager.Instance;
-            if (nm == null) return;
-            RpcRegisterPlayer(nm.LocalPlayerName ?? "");
+            for (int i = 0; i < MaxSlots; i++)
+            {
+                if (PlayerSlotIds[i] == playerId) return i;
+            }
+            return -1;
         }
 
         /// <summary>
-        /// info.Sourceが空ならLocalPlayerを返すヘルパー
+        /// ホストのみ: 問題数を変更して全員に同期する。
+        /// </summary>
+        public void SetQuestionsPerGenre(int count)
+        {
+            if (!HasStateAuthority) return;
+            QuestionsPerGenre = count;
+        }
+
+        /// <summary>
+        /// info.Sourceが空(ホストのローカル呼び出し)ならLocalPlayerを返す
         /// </summary>
         private int ResolveCallerPlayerId(PlayerRef source)
         {
-            if (source.IsRealPlayer) return source.PlayerId;
-            return Runner.LocalPlayer.PlayerId; // ホストがローカル呼び出しした場合
+            return source.IsRealPlayer ? source.PlayerId : Runner.LocalPlayer.PlayerId;
         }
 
         /// <summary>
@@ -94,18 +119,19 @@ namespace GemmaQuiz.Network
         }
 
         /// <summary>
-        /// プレイヤーがジャンルを選択した際にホストに送信。
+        /// プレイヤーがジャンルを選択した際にホストに送信。genreIndex は GenreEncoding 済みの値。
         /// </summary>
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
-        public void RpcSelectGenre(int genreIndex, NetworkString<_32> playerName, RpcInfo info = default)
+        public void RpcSelectGenre(int encodedGenre, NetworkString<_32> playerName, RpcInfo info = default)
         {
             int playerId = ResolveCallerPlayerId(info.Source);
             int slot = GetOrAssignSlot(playerId);
             if (slot < 0) return;
 
-            SelectedGenres.Set(slot, genreIndex);
+            SelectedGenres.Set(slot, encodedGenre);
+            CustomGenreTexts.Set(slot, "");
             PlayerNames.Set(slot, playerName);
-            Debug.Log($"[LobbySync] Player(id={playerId}) (slot {slot}) selected genre {genreIndex}");
+            Debug.Log($"[LobbySync] Player(id={playerId}) (slot {slot}) selected genre {encodedGenre}");
         }
 
         /// <summary>
@@ -125,19 +151,17 @@ namespace GemmaQuiz.Network
         }
 
         /// <summary>
-        /// プレイヤーが切断した時にスロットを解放（ホストのみ呼ぶ）。
+        /// プレイヤーが切断した時にスロットを解放（ホストのみ）。
         /// </summary>
         public void ReleaseSlot(PlayerRef player)
         {
             if (!HasStateAuthority) return;
             int slot = FindSlot(player.PlayerId);
-            if (slot >= 0)
-            {
-                SelectedGenres.Set(slot, -1);
-                PlayerNames.Set(slot, "");
-                PlayerSlotIds.Set(slot, EMPTY_SLOT);
-                CustomGenreTexts.Set(slot, "");
-            }
+            if (slot < 0) return;
+            SelectedGenres.Set(slot, -1);
+            PlayerNames.Set(slot, "");
+            PlayerSlotIds.Set(slot, EMPTY_SLOT);
+            CustomGenreTexts.Set(slot, "");
         }
 
         private int GetOrAssignSlot(int playerId)
@@ -145,7 +169,7 @@ namespace GemmaQuiz.Network
             int existing = FindSlot(playerId);
             if (existing >= 0) return existing;
 
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < MaxSlots; i++)
             {
                 if (PlayerSlotIds[i] == EMPTY_SLOT)
                 {
@@ -154,35 +178,6 @@ namespace GemmaQuiz.Network
                 }
             }
             return -1;
-        }
-
-        private int FindSlot(int playerId)
-        {
-            for (int i = 0; i < 8; i++)
-            {
-                if (PlayerSlotIds[i] == playerId) return i;
-            }
-            return -1;
-        }
-
-        public int GetActiveSlotCount()
-        {
-            int count = 0;
-            for (int i = 0; i < 8; i++)
-            {
-                if (PlayerSlotIds[i] != EMPTY_SLOT) count++;
-            }
-            return count;
-        }
-
-        public bool AreAllReady(int requiredCount)
-        {
-            int ready = 0;
-            for (int i = 0; i < 8; i++)
-            {
-                if (PlayerSlotIds[i] != EMPTY_SLOT && SelectedGenres[i] >= 0) ready++;
-            }
-            return ready >= requiredCount && requiredCount > 0;
         }
     }
 }
