@@ -1,4 +1,3 @@
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -42,30 +41,40 @@ namespace GemmaQuiz.UI
         [Header("Score Board")]
         [SerializeField] private Text totalScoreText;
 
-        [Header("Auto Advance")]
+        [Header("Timing")]
         [SerializeField] private float autoAdvanceDelay = 4f;
+        [Tooltip("問題文タイプライター演出の1文字あたり秒数。制限時間を食うので短めに")]
+        [SerializeField] private float typewriterCharDelay = 0.02f;
 
         [Header("Colors")]
-        [SerializeField] private Color defaultChoiceColor = new Color(0.2f, 0.2f, 0.3f);
         [SerializeField] private Color selectedChoiceColor = new Color(0.3f, 0.5f, 0.8f);
         [SerializeField] private Color correctChoiceColor = new Color(0.2f, 0.7f, 0.3f);
         [SerializeField] private Color wrongChoiceColor = new Color(0.8f, 0.2f, 0.2f);
-
-        private readonly Color[] originalChoiceColors = {
+        [SerializeField] private Color[] choiceBaseColors =
+        {
             new Color(0.85f, 0.25f, 0.25f),
             new Color(0.2f, 0.55f, 0.85f),
             new Color(0.85f, 0.65f, 0.1f),
             new Color(0.2f, 0.7f, 0.4f)
         };
 
+        private static readonly Color DimmedChoiceColor = new Color(0.15f, 0.15f, 0.2f, 0.6f);
+        private static readonly Color TimerNormalColor = new Color(0.2f, 0.7f, 0.9f);
+
         private int selectedChoice = -1;
         private bool hasAnswered;
         private bool showingResult;
         private int previousTotalScore;
         private bool timerWarning;
+        private bool subscribedToQuizManager;
 
-        // 解答リストエントリーを管理
+        // 解答リストエントリー
         private readonly List<GameObject> answerEntryInstances = new();
+        private const string AnswerEntryPrefix = "AnswerEntry_";
+
+        // 選択肢ボタンの定位置 (スライド演出の途中で次の問題が来ても位置がズレないよう Start で固定)
+        private Vector2[] choiceHomePositions;
+        private Coroutine[] choiceSlideRoutines;
 
         // ScalePunch の競合防止: Transform → (元スケール, 実行中コルーチン)
         private readonly Dictionary<Transform, Vector3> punchOriginalScales = new();
@@ -73,18 +82,18 @@ namespace GemmaQuiz.UI
 
         private void Start()
         {
+            choiceHomePositions = new Vector2[choiceButtons.Length];
+            choiceSlideRoutines = new Coroutine[choiceButtons.Length];
             for (int i = 0; i < choiceButtons.Length; i++)
             {
                 int index = i;
                 choiceButtons[i].onClick.AddListener(() => OnChoiceSelected(index));
+                choiceHomePositions[i] = choiceButtons[i].GetComponent<RectTransform>().anchoredPosition;
             }
 
             resultPanel.SetActive(false);
-
             TrySubscribeToQuizManager();
         }
-
-        private bool subscribedToQuizManager;
 
         private void TrySubscribeToQuizManager()
         {
@@ -135,7 +144,7 @@ namespace GemmaQuiz.UI
             else
             {
                 timerText.color = Color.white;
-                timerBar.color = new Color(0.2f, 0.7f, 0.9f);
+                timerBar.color = TimerNormalColor;
                 timerWarning = false;
             }
         }
@@ -151,38 +160,51 @@ namespace GemmaQuiz.UI
             resultPanel.SetActive(false);
             ClearAnswerList();
 
-            var qmInfo = QuizManager.Instance;
-            int total = qmInfo != null ? qmInfo.TotalQuestions : 0;
-            string genreName = qmInfo != null ? qmInfo.LoadingRoundGenreName.ToString() : "";
-            int diff = qmInfo != null ? qmInfo.CurrentQuestionDifficulty : 1;
-            var difficulty = (GemmaQuiz.Data.QuizDifficulty)diff;
-            string diffLabel = $"{difficulty.ToColorTag()}{difficulty.ToLabel()}</color>";
-            string countLabel = total > 0 ? $"Q{index + 1}/{total}" : $"Q{index + 1}";
-            string genreLabel = string.IsNullOrEmpty(genreName) ? "" : $"{genreName} ";
-            questionNumberText.text = $"{genreLabel}{countLabel}  {diffLabel}";
+            questionNumberText.text = BuildQuestionHeader(index);
             StartScalePunch(questionNumberText.transform, 1.3f, 0.4f);
-            StartCoroutine(AnimTypeWriter(questionText, question.question, 0.04f));
+            StartCoroutine(AnimTypeWriter(questionText, question.question, typewriterCharDelay));
 
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < choiceButtons.Length; i++)
             {
-                choiceTexts[i].text = question.choices[i];
-                choiceImages[i].color = originalChoiceColors[i];
+                choiceTexts[i].text = i < question.choices.Length ? question.choices[i] : "";
+                choiceImages[i].color = choiceBaseColors[i % choiceBaseColors.Length];
                 choiceButtons[i].interactable = true;
 
-                // 前回問題のScalePunchが残っていた場合に備えて元スケールへ戻す
+                // 前回問題の演出が残っていた場合に備えて元スケール/定位置へ戻す
                 var btnTr = choiceButtons[i].transform;
                 if (punchOriginalScales.TryGetValue(btnTr, out var origScale))
                     btnTr.localScale = origScale;
 
                 var rect = choiceButtons[i].GetComponent<RectTransform>();
-                var targetPos = rect.anchoredPosition;
+                if (choiceSlideRoutines[i] != null) StopCoroutine(choiceSlideRoutines[i]);
+                var home = choiceHomePositions[i];
                 float offsetX = (i % 2 == 0) ? -800f : 800f;
-                StartCoroutine(AnimSlide(rect, targetPos + new Vector2(offsetX, 0), targetPos, 0.4f, 0.3f + i * 0.1f));
+                choiceSlideRoutines[i] = StartCoroutine(AnimSlide(rect, home + new Vector2(offsetX, 0), home, 0.4f, 0.3f + i * 0.1f));
             }
 
             timerBar.fillAmount = 1f;
             timerText.color = Color.white;
-            timerBar.color = new Color(0.2f, 0.7f, 0.9f);
+            timerBar.color = TimerNormalColor;
+        }
+
+        /// <summary>
+        /// 例: "R2/4  スポーツ-野球  Q3/5  Normal"
+        /// </summary>
+        private static string BuildQuestionHeader(int index)
+        {
+            var qm = QuizManager.Instance;
+            if (qm == null) return $"Q{index + 1}";
+
+            var difficulty = (QuizDifficulty)qm.CurrentQuestionDifficulty;
+            var sb = new System.Text.StringBuilder();
+            if (qm.TotalRounds > 1)
+                sb.Append($"R{qm.CurrentRoundIndex + 1}/{qm.TotalRounds}  ");
+            string genreName = qm.LoadingRoundGenreName.ToString();
+            if (!string.IsNullOrEmpty(genreName))
+                sb.Append(genreName).Append("  ");
+            sb.Append(qm.TotalQuestions > 0 ? $"Q{index + 1}/{qm.TotalQuestions}" : $"Q{index + 1}");
+            sb.Append("  ").Append(difficulty.ToColorTag()).Append(difficulty.ToLabel()).Append("</color>");
+            return sb.ToString();
         }
 
         private void OnChoiceSelected(int index)
@@ -193,9 +215,9 @@ namespace GemmaQuiz.UI
 
             StartScalePunch(choiceButtons[index].transform, 1.1f, 0.25f);
 
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < choiceButtons.Length; i++)
             {
-                choiceImages[i].color = (i == index) ? selectedChoiceColor : new Color(0.15f, 0.15f, 0.2f, 0.6f);
+                choiceImages[i].color = (i == index) ? selectedChoiceColor : DimmedChoiceColor;
                 choiceButtons[i].interactable = false;
             }
 
@@ -205,11 +227,12 @@ namespace GemmaQuiz.UI
         private void HandleTimerExpired()
         {
             showingResult = true;
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < choiceButtons.Length; i++)
                 choiceButtons[i].interactable = false;
         }
 
-        // 解答リスト操作
+        // ===== 解答リスト =====
+
         private void ClearAnswerList()
         {
             foreach (var e in answerEntryInstances) Destroy(e);
@@ -224,29 +247,19 @@ namespace GemmaQuiz.UI
             if (showingResult) return;
 
             // 同じプレイヤーのエントリが既にあれば作らない
-            string entryName = $"AnswerEntry_{player.PlayerId}";
-            for (int i = 0; i < answerEntryInstances.Count; i++)
-            {
-                if (answerEntryInstances[i] != null && answerEntryInstances[i].name == entryName)
-                    return;
-            }
+            string entryName = AnswerEntryPrefix + player.PlayerId;
+            foreach (var e in answerEntryInstances)
+                if (e != null && e.name == entryName) return;
 
             var entryObj = Instantiate(answerListEntryPrefab, answerListContent);
+            entryObj.name = entryName;
 
             // 順位 + 名前 を表示（解答番号は結果開示時に表示）
             var texts = entryObj.GetComponentsInChildren<Text>();
-            if (texts.Length > 0)
-                texts[0].text = $"{order}. {playerName}";
-            // 解答番号用のText（2つ目）は結果開示時に書き換え
-            if (texts.Length > 1)
-                texts[1].text = "?";
-
-            // PlayerRefを記録するためにNameを設定
-            entryObj.name = entryName;
+            if (texts.Length > 0) texts[0].text = $"{order}. {playerName}";
+            if (texts.Length > 1) texts[1].text = "?";
 
             answerEntryInstances.Add(entryObj);
-
-            // 軽い登場アニメ
             StartScalePunch(entryObj.transform, 1.1f, 0.25f);
         }
 
@@ -255,7 +268,7 @@ namespace GemmaQuiz.UI
             showingResult = true;
             resultPanel.SetActive(true);
 
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < choiceButtons.Length; i++)
             {
                 if (i == result.correctIndex)
                 {
@@ -280,60 +293,68 @@ namespace GemmaQuiz.UI
                 StartCoroutine(AnimFade(resultCanvasGroup, 0f, 1f, 0.4f, 0.3f));
             }
 
+            // 自分の結果が見つからなかった場合に前問の表示が残らないよう先にリセット
+            resultText.text = "";
+            scoreText.text = "";
+
             var runner = Network.NetworkManager.Instance?.Runner;
             if (runner != null)
             {
                 foreach (var pr in result.playerResults)
                 {
-                    if (pr.playerRef == runner.LocalPlayer)
-                    {
-                        if (pr.isCorrect)
-                        {
-                            AudioManager.Play(SfxKind.Correct);
-                            resultText.text = "正解!";
-                            resultText.color = correctChoiceColor;
-                            scoreText.text = $"+{pr.score}点 ({pr.elapsedTime:F1}秒)";
-                            StartScalePunch(resultText.transform, 1.4f, 0.5f);
-                        }
-                        else if (selectedChoice < 0)
-                        {
-                            resultText.text = "時間切れ";
-                            resultText.color = Color.gray;
-                            scoreText.text = "+0点";
-                        }
-                        else
-                        {
-                            AudioManager.Play(SfxKind.Wrong);
-                            resultText.text = "不正解...";
-                            resultText.color = wrongChoiceColor;
-                            scoreText.text = "+0点";
-                            StartCoroutine(AnimShake(resultText.GetComponent<RectTransform>(), 6f, 0.3f));
-                        }
-
-                        int newTotal = previousTotalScore + pr.score;
-                        if (totalScoreText != null && pr.score > 0)
-                            StartCoroutine(AnimCountUp(totalScoreText, previousTotalScore, newTotal, 0.8f, "合計: {0}点"));
-                        else if (totalScoreText != null)
-                            totalScoreText.text = $"合計: {newTotal}点";
-                        previousTotalScore = newTotal;
-                        break;
-                    }
+                    if (pr.playerRef != runner.LocalPlayer) continue;
+                    ShowLocalResult(pr);
+                    break;
                 }
             }
 
-            // 解答リストに各プレイヤーの選択番号と正誤を着色表示
             UpdateAnswerListWithResults(result);
 
-            // 自動的に次の問題へ進む
+            // 自動的に次の問題へ (ホストのみ実際に進める。QuizManager.NextQuestion は非ホストでは無視される)
             CancelInvoke(nameof(AdvanceToNext));
             Invoke(nameof(AdvanceToNext), autoAdvanceDelay);
         }
 
+        private void ShowLocalResult(PlayerQuestionResult pr)
+        {
+            if (pr.isCorrect)
+            {
+                AudioManager.Play(SfxKind.Correct);
+                resultText.text = "正解!";
+                resultText.color = correctChoiceColor;
+                scoreText.text = $"+{pr.score}点 ({pr.elapsedTime:F1}秒)";
+                StartScalePunch(resultText.transform, 1.4f, 0.5f);
+            }
+            else if (pr.choiceIndex < 0)
+            {
+                resultText.text = "時間切れ";
+                resultText.color = Color.gray;
+                scoreText.text = "+0点";
+            }
+            else
+            {
+                AudioManager.Play(SfxKind.Wrong);
+                resultText.text = "不正解...";
+                resultText.color = wrongChoiceColor;
+                scoreText.text = "+0点";
+                StartCoroutine(AnimShake(resultText.GetComponent<RectTransform>(), 6f, 0.3f));
+            }
+
+            int newTotal = previousTotalScore + pr.score;
+            if (totalScoreText != null)
+            {
+                if (pr.score > 0)
+                    StartCoroutine(AnimCountUp(totalScoreText, previousTotalScore, newTotal, 0.8f, "合計: {0}点"));
+                else
+                    totalScoreText.text = $"合計: {newTotal}点";
+            }
+            previousTotalScore = newTotal;
+        }
+
         private void UpdateAnswerListWithResults(QuestionResult result)
         {
-            // Render() の change detector の順序に依存せず、結果データから解答順リストを完全に作り直す。
+            // Render() の change detector の順序に依存せず、結果データから解答順リストを作り直す。
             // 早く答えた順 → 答えなかった人は最後。
-
             if (answerListContent == null || answerListEntryPrefab == null) return;
 
             var ordered = new List<PlayerQuestionResult>(result.playerResults);
@@ -341,20 +362,17 @@ namespace GemmaQuiz.UI
             {
                 bool aAns = a.choiceIndex >= 0;
                 bool bAns = b.choiceIndex >= 0;
-                if (aAns && !bAns) return -1;
-                if (!aAns && bAns) return 1;
-                if (!aAns && !bAns) return 0;
+                if (aAns != bAns) return aAns ? -1 : 1;
+                if (!aAns) return 0;
                 return a.elapsedTime.CompareTo(b.elapsedTime);
             });
 
             // 既存エントリを PlayerId でマップ化（再利用するため）
             var existingMap = new Dictionary<int, GameObject>();
-            const string prefix = "AnswerEntry_";
             foreach (var e in answerEntryInstances)
             {
-                if (e == null) continue;
-                if (!e.name.StartsWith(prefix)) continue;
-                if (int.TryParse(e.name.Substring(prefix.Length), out int pid))
+                if (e == null || !e.name.StartsWith(AnswerEntryPrefix)) continue;
+                if (int.TryParse(e.name.Substring(AnswerEntryPrefix.Length), out int pid))
                     existingMap[pid] = e;
             }
 
@@ -366,15 +384,10 @@ namespace GemmaQuiz.UI
                 bool answered = pr.choiceIndex >= 0;
                 int playerId = pr.playerRef.PlayerId;
 
-                GameObject entry;
-                if (existingMap.TryGetValue(playerId, out entry))
-                {
-                    existingMap.Remove(playerId);
-                }
-                else
+                if (!existingMap.Remove(playerId, out var entry))
                 {
                     entry = Instantiate(answerListEntryPrefab, answerListContent);
-                    entry.name = $"{prefix}{playerId}";
+                    entry.name = AnswerEntryPrefix + playerId;
                 }
                 entry.transform.SetSiblingIndex(newList.Count);
 
@@ -387,12 +400,9 @@ namespace GemmaQuiz.UI
                 var bgImg = entry.GetComponent<Image>();
                 if (bgImg != null)
                 {
-                    if (!answered)
-                        bgImg.color = new Color(0.4f, 0.4f, 0.4f, 0.85f);
-                    else if (pr.isCorrect)
-                        bgImg.color = new Color(0.2f, 0.7f, 0.3f, 0.85f);
-                    else
-                        bgImg.color = new Color(0.8f, 0.2f, 0.2f, 0.85f);
+                    bgImg.color = !answered ? new Color(0.4f, 0.4f, 0.4f, 0.85f)
+                        : pr.isCorrect ? new Color(0.2f, 0.7f, 0.3f, 0.85f)
+                        : new Color(0.8f, 0.2f, 0.2f, 0.85f);
                 }
 
                 newList.Add(entry);
@@ -418,10 +428,16 @@ namespace GemmaQuiz.UI
         public void SetContentVisible(bool visible)
         {
             if (questionPanel != null) questionPanel.gameObject.SetActive(visible);
-            for (int i = 0; i < choiceButtons.Length; i++)
-                if (choiceButtons[i] != null) choiceButtons[i].gameObject.SetActive(visible);
+            foreach (var btn in choiceButtons)
+                if (btn != null) btn.gameObject.SetActive(visible);
             if (resultPanel != null && !visible) resultPanel.SetActive(false);
-            if (answerListContent != null) answerListContent.gameObject.SetActive(visible);
+            if (answerListContent != null)
+            {
+                // 「解答順」ヘッダーごと隠す (Content の親がパネル。親が Canvas 直下なら Content 自身)
+                var parent = answerListContent.parent;
+                var listRoot = (parent != null && parent.GetComponent<Canvas>() == null) ? parent.gameObject : answerListContent.gameObject;
+                listRoot.SetActive(visible);
+            }
             if (timerBar != null) timerBar.gameObject.SetActive(visible);
             if (timerText != null) timerText.gameObject.SetActive(visible);
             if (questionNumberText != null) questionNumberText.gameObject.SetActive(visible);
@@ -433,35 +449,6 @@ namespace GemmaQuiz.UI
                 hasAnswered = false;
                 ClearAnswerList();
             }
-        }
-
-        /// <summary>
-        /// 全ラウンド終了時に最終ランキングを表示する。QuizFlowControllerから呼ばれる。
-        /// </summary>
-        public void ShowFinalRanking(List<PlayerScoreEntry> finalScores)
-        {
-            showingResult = true;
-            resultPanel.SetActive(true);
-            CancelInvoke(nameof(AdvanceToNext));
-
-            if (resultCanvasGroup != null)
-            {
-                resultCanvasGroup.alpha = 0f;
-                StartCoroutine(AnimFade(resultCanvasGroup, 0f, 1f, 0.6f, 0f));
-            }
-
-            resultText.text = "クイズ終了!";
-            resultText.color = new Color(1f, 0.85f, 0.2f);
-            StartScalePunch(resultText.transform, 1.3f, 0.5f);
-
-            string scoreBoard = "";
-            for (int i = 0; i < finalScores.Count; i++)
-            {
-                var entry = finalScores[i];
-                string medal = i switch { 0 => "<color=#FFD700>1st</color>", 1 => "<color=#C0C0C0>2nd</color>", 2 => "<color=#CD7F32>3rd</color>", _ => $"{i + 1}th" };
-                scoreBoard += $"{medal}  {entry.playerName}:  {entry.totalScore}点\n";
-            }
-            scoreText.text = scoreBoard;
         }
 
         // === Animation Coroutines ===
@@ -505,6 +492,7 @@ namespace GemmaQuiz.UI
 
         private IEnumerator AnimSlide(RectTransform tr, Vector2 from, Vector2 to, float dur, float delay)
         {
+            tr.anchoredPosition = from;
             if (delay > 0f) yield return new WaitForSeconds(delay);
             for (float t = 0; t < dur; t += Time.deltaTime) { tr.anchoredPosition = Vector2.Lerp(from, to, Ease(t / dur)); yield return null; }
             tr.anchoredPosition = to;
@@ -534,7 +522,7 @@ namespace GemmaQuiz.UI
             for (float t = 0; t < dur; t += Time.deltaTime)
             {
                 float d = 1f - t / dur;
-                tr.anchoredPosition = orig + new Vector2(UnityEngine.Random.Range(-intensity, intensity) * d, UnityEngine.Random.Range(-intensity, intensity) * d);
+                tr.anchoredPosition = orig + new Vector2(Random.Range(-intensity, intensity) * d, Random.Range(-intensity, intensity) * d);
                 yield return null;
             }
             tr.anchoredPosition = orig;
@@ -550,21 +538,13 @@ namespace GemmaQuiz.UI
 
             // 折り返し位置がガクガク動かないように、最初から全文をレイアウトし、
             // 未表示部分を透明色のリッチテキストタグで隠して徐々に可視化する
-            // (リッチテキストの干渉を防ぐため < > はサニタイズ済み前提)
-            for (int i = 0; i <= full.Length; i++)
+            // (問題文の < > は QuizGenerator 側で全角に置換済み)
+            for (int i = 0; i < full.Length; i++)
             {
-                if (i >= full.Length)
-                {
-                    txt.text = full;
-                }
-                else
-                {
-                    string visible = full.Substring(0, i);
-                    string hidden = full.Substring(i);
-                    txt.text = visible + "<color=#00000000>" + hidden + "</color>";
-                }
+                txt.text = full.Substring(0, i) + "<color=#00000000>" + full.Substring(i) + "</color>";
                 yield return new WaitForSeconds(charDelay);
             }
+            txt.text = full;
         }
     }
 }

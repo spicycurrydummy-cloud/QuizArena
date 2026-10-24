@@ -7,6 +7,10 @@ using GemmaQuiz.Network;
 
 namespace GemmaQuiz.UI
 {
+    /// <summary>
+    /// タイトル画面のUI制御。セッション作成/参加/一覧、AIプロバイダー選択。
+    /// UI要素はすべて TitleScene 上に配置し Inspector で参照する。
+    /// </summary>
     public class TitleUI : MonoBehaviour
     {
         [Header("Input Fields")]
@@ -29,8 +33,12 @@ namespace GemmaQuiz.UI
         [Header("Status")]
         [SerializeField] private Text statusText;
 
+        // Dropdown の並び。WebGL では localhost の Ollama に届かないので除外する。
+        private readonly List<(string label, AIProvider provider)> providerOptions = new();
+
         private readonly List<GameObject> sessionEntries = new();
         private bool browsingLobby;
+        private string guestName; // 名前未入力時のGUEST名 (セッション中は固定)
 
         private void Start()
         {
@@ -41,6 +49,8 @@ namespace GemmaQuiz.UI
                 soloTestButton.onClick.AddListener(OnSoloTest);
             if (refreshSessionListButton != null)
                 refreshSessionListButton.onClick.AddListener(OnRefreshSessionList);
+            if (sessionNameInput != null)
+                sessionNameInput.onSubmit.AddListener(_ => OnJoinSession()); // Enterで参加
 
             SetupAIProviderDropdown();
 
@@ -72,15 +82,17 @@ namespace GemmaQuiz.UI
 
         private string GetPlayerName()
         {
-            var input = playerNameInput?.text?.Trim();
-            if (string.IsNullOrWhiteSpace(input))
-                return $"GUEST_{Random.Range(100, 1000)}";
-            return input;
+            var input = playerNameInput != null ? playerNameInput.text?.Trim() : null;
+            if (!string.IsNullOrWhiteSpace(input))
+                return input;
+            if (string.IsNullOrEmpty(guestName))
+                guestName = $"GUEST_{Random.Range(100, 1000)}";
+            return guestName;
         }
 
         private string GetSessionName()
         {
-            var input = sessionNameInput?.text?.Trim();
+            var input = sessionNameInput != null ? sessionNameInput.text?.Trim() : null;
             if (string.IsNullOrWhiteSpace(input))
                 return $"Room_{Random.Range(100, 1000)}";
             return input;
@@ -92,40 +104,32 @@ namespace GemmaQuiz.UI
             SetStatus("セッションを作成中...");
             browsingLobby = false;
 
-            NetworkManager.Instance.StartHost(
-                GetSessionName(),
-                GetPlayerName()
-            );
+            NetworkManager.Instance.StartHost(GetSessionName(), GetPlayerName());
         }
 
         private void OnJoinSession()
         {
-            if (string.IsNullOrWhiteSpace(sessionNameInput.text))
+            if (sessionNameInput == null || string.IsNullOrWhiteSpace(sessionNameInput.text))
             {
                 SetStatus("セッション名を入力するか一覧から選択してください");
                 return;
             }
+            if (!joinSessionButton.interactable) return; // 二重送信防止 (Enter + クリック)
 
             SetButtonsInteractable(false);
             SetStatus("セッションに参加中...");
             browsingLobby = false;
 
-            NetworkManager.Instance.JoinSession(
-                sessionNameInput.text.Trim(),
-                GetPlayerName()
-            );
+            NetworkManager.Instance.JoinSession(sessionNameInput.text.Trim(), GetPlayerName());
         }
 
         private void OnSoloTest()
         {
-            var playerName = GetPlayerName();
-            var sessionName = "SoloTest_" + Random.Range(1000, 9999);
-
             SetButtonsInteractable(false);
             SetStatus("ソロテストモードで起動中...");
             browsingLobby = false;
 
-            NetworkManager.Instance.StartHost(sessionName, playerName, maxPlayersOverride: 1);
+            NetworkManager.Instance.StartHost("SoloTest_" + Random.Range(1000, 9999), GetPlayerName(), maxPlayersOverride: 1);
         }
 
         private void OnRefreshSessionList()
@@ -140,7 +144,6 @@ namespace GemmaQuiz.UI
             // 作成/参加処理中はステータスを上書きしない
             if (!browsingLobby) return;
 
-            // 既存エントリをクリア
             foreach (var e in sessionEntries) Destroy(e);
             sessionEntries.Clear();
 
@@ -157,9 +160,9 @@ namespace GemmaQuiz.UI
             foreach (var session in sessions)
             {
                 var entryObj = Instantiate(sessionListEntryPrefab, sessionListContent);
-                var texts = entryObj.GetComponentsInChildren<Text>();
-                if (texts.Length > 0)
-                    texts[0].text = $"{session.Name}  ({session.PlayerCount}/{session.MaxPlayers})";
+                var text = entryObj.GetComponentInChildren<Text>();
+                if (text != null)
+                    text.text = $"{session.Name}  ({session.PlayerCount}/{session.MaxPlayers})";
 
                 var btn = entryObj.GetComponent<Button>();
                 if (btn != null)
@@ -182,7 +185,7 @@ namespace GemmaQuiz.UI
             SetStatus("接続完了! ロビーに移動します...");
         }
 
-        private void HandlePlayerJoinedAsHost(Fusion.PlayerRef player)
+        private void HandlePlayerJoinedAsHost(PlayerRef player)
         {
             if (browsingLobby) return;
             if (NetworkManager.Instance.IsHost)
@@ -212,19 +215,27 @@ namespace GemmaQuiz.UI
             if (refreshSessionListButton != null) refreshSessionListButton.interactable = interactable;
         }
 
+        // ===== AIプロバイダー =====
+
         private void SetupAIProviderDropdown()
         {
-            // Inspectorで未割り当てならランタイムで動的生成
-            if (aiProviderDropdown == null)
-                aiProviderDropdown = CreateAIProviderDropdownUI();
             if (aiProviderDropdown == null) return;
 
+            providerOptions.Clear();
+            providerOptions.Add(("Inception (Mercury 3)", AIProvider.Inception));
+            providerOptions.Add(("Gemini (Flash Lite)", AIProvider.Gemini));
+            if (Application.platform != RuntimePlatform.WebGLPlayer)
+                providerOptions.Add(("Ollama (ローカル)", AIProvider.Ollama));
+
+            var labels = new List<string>();
+            foreach (var (label, _) in providerOptions) labels.Add(label);
+
             aiProviderDropdown.ClearOptions();
-            aiProviderDropdown.AddOptions(new List<string> { "Ollama (ローカル)", "Inception (Mercury)" });
+            aiProviderDropdown.AddOptions(labels);
 
             var gen = QuizGenerator.Instance;
-            if (gen != null)
-                aiProviderDropdown.value = (int)gen.Provider;
+            int current = gen != null ? providerOptions.FindIndex(o => o.provider == gen.Provider) : 0;
+            aiProviderDropdown.SetValueWithoutNotify(Mathf.Max(0, current));
 
             aiProviderDropdown.onValueChanged.AddListener(OnAIProviderChanged);
         }
@@ -232,109 +243,10 @@ namespace GemmaQuiz.UI
         private void OnAIProviderChanged(int index)
         {
             var gen = QuizGenerator.Instance;
-            if (gen == null) return;
+            if (gen == null || index < 0 || index >= providerOptions.Count) return;
 
-            gen.Provider = (AIProvider)index;
+            gen.Provider = providerOptions[index].provider;
             Debug.Log($"[TitleUI] AI Provider changed to: {gen.Provider}");
-        }
-
-        private Dropdown CreateAIProviderDropdownUI()
-        {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas == null) return null;
-
-            // SessionNameInputの位置を基準にする
-            var sessionInput = canvas.transform.Find("SessionNameInput");
-            float baseX = -480f;
-            float baseY = -30f;
-            if (sessionInput != null)
-            {
-                var siRect = sessionInput.GetComponent<RectTransform>();
-                if (siRect != null)
-                {
-                    baseX = siRect.anchoredPosition.x;
-                    baseY = siRect.anchoredPosition.y - 80f;
-                }
-            }
-
-            // ラベル（SessionNameLabel と同じ位置感）
-            var labelObj = new GameObject("AIProviderLabel");
-            labelObj.transform.SetParent(canvas.transform, false);
-            var labelRect = labelObj.AddComponent<RectTransform>();
-            labelRect.anchoredPosition = new Vector2(baseX, baseY + 35f);
-            labelRect.sizeDelta = new Vector2(560, 40);
-            labelObj.AddComponent<CanvasRenderer>();
-            var label = labelObj.AddComponent<Text>();
-            label.text = "問題生成AI";
-            label.font = JapaneseFont.Get();
-            label.fontSize = 24;
-            label.color = Color.white;
-            label.alignment = TextAnchor.MiddleLeft;
-
-            // Dropdown（SessionNameInput と同じサイズ感: 560x50）
-            var ddObj = DefaultControls.CreateDropdown(new DefaultControls.Resources());
-            ddObj.name = "AIProviderDropdown";
-            ddObj.transform.SetParent(canvas.transform, false);
-            var ddRect = ddObj.GetComponent<RectTransform>();
-            ddRect.anchoredPosition = new Vector2(baseX, baseY);
-            ddRect.sizeDelta = new Vector2(560, 50);
-
-            var ddImage = ddObj.GetComponent<Image>();
-            if (ddImage != null)
-                ddImage.color = new Color(0.2f, 0.2f, 0.3f, 1f);
-
-            var ddLabel = ddObj.transform.Find("Label");
-            if (ddLabel != null)
-            {
-                var ddLabelText = ddLabel.GetComponent<Text>();
-                if (ddLabelText != null)
-                {
-                    ddLabelText.color = Color.white;
-                    ddLabelText.fontSize = 22;
-                }
-            }
-
-            // Arrow の大きさ調整
-            var arrow = ddObj.transform.Find("Arrow");
-            if (arrow != null)
-            {
-                var arrowRect = arrow.GetComponent<RectTransform>();
-                if (arrowRect != null)
-                    arrowRect.sizeDelta = new Vector2(30, 30);
-            }
-
-            var template = ddObj.transform.Find("Template");
-            if (template != null)
-            {
-                var templateImage = template.GetComponent<Image>();
-                if (templateImage != null)
-                    templateImage.color = new Color(0.15f, 0.15f, 0.25f, 1f);
-
-                // テンプレート内のアイテムも大きく
-                var item = template.Find("Viewport/Content/Item");
-                if (item != null)
-                {
-                    var itemRect = item.GetComponent<RectTransform>();
-                    if (itemRect != null)
-                        itemRect.sizeDelta = new Vector2(0, 45);
-                    var itemLabel = item.Find("Item Label");
-                    if (itemLabel != null)
-                    {
-                        var ilText = itemLabel.GetComponent<Text>();
-                        if (ilText != null) ilText.fontSize = 20;
-                    }
-                }
-            }
-
-            // SessionNameInputの直後に配置
-            if (sessionInput != null)
-            {
-                int idx = sessionInput.GetSiblingIndex() + 1;
-                labelObj.transform.SetSiblingIndex(idx);
-                ddObj.transform.SetSiblingIndex(idx + 1);
-            }
-
-            return ddObj.GetComponent<Dropdown>();
         }
     }
 }

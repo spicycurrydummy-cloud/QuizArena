@@ -7,7 +7,8 @@ using GemmaQuiz.Network;
 namespace GemmaQuiz.UI
 {
     /// <summary>
-    /// ロビー画面のUI制御。プレイヤーリスト、ジャンル選択、ゲーム開始ボタン。
+    /// ロビー画面のUI制御。プレイヤーリスト、ジャンル選択、問題数、ゲーム開始ボタン。
+    /// プレイヤーの状態は LobbySync ([Networked]) を正とし、SessionManager はそのローカルコピー。
     /// </summary>
     public class LobbyUI : MonoBehaviour
     {
@@ -23,8 +24,9 @@ namespace GemmaQuiz.UI
         [SerializeField] private Transform genreButtonContainer;
         [SerializeField] private GameObject genreButtonPrefab;
         [SerializeField] private Text selectedGenreText;
+        [SerializeField] private InputField customGenreInput;
 
-        [Header("Question Count")]
+        [Header("Question Count (host only)")]
         [SerializeField] private Text questionCountText;
         [SerializeField] private Button questionCountMinusButton;
         [SerializeField] private Button questionCountPlusButton;
@@ -36,20 +38,20 @@ namespace GemmaQuiz.UI
         [Header("Status")]
         [SerializeField] private Text statusText;
 
+        [Header("Sub-genre Popup")]
+        [SerializeField] private int popupFontSize = 22;
+        [SerializeField] private float popupWidth = 380f;
+
         private readonly List<GameObject> entryInstances = new();
         private readonly Dictionary<QuizGenre, Image> genreButtonImages = new();
-        private int myEncodedGenre = -1; // GenreEncoding 済みの値
 
-        // サブジャンルポップアップ
-        private GameObject subGenrePopup;
-        private readonly List<GameObject> subGenreButtons = new();
-        private int popupGenreIndex = -1;
-
-        // カスタムジャンル入力
-        [SerializeField] private InputField customGenreInput;
+        // サブジャンルポップアップ (内容がジャンルごとに変わるので動的生成)
+        private GameObject subGenrePopupRoot;
 
         private static readonly Color selectedColor = new Color(0.3f, 0.7f, 0.4f);
         private static readonly Color deselectedColor = new Color(0.2f, 0.2f, 0.3f);
+
+        private bool IsHost => NetworkManager.Instance != null && NetworkManager.Instance.IsHost;
 
         private void Start()
         {
@@ -60,10 +62,16 @@ namespace GemmaQuiz.UI
                 questionCountMinusButton.onClick.AddListener(() => ChangeQuestionCount(-1));
             if (questionCountPlusButton != null)
                 questionCountPlusButton.onClick.AddListener(() => ChangeQuestionCount(+1));
-
-            CreateGenreButtons();
             if (customGenreInput != null)
                 customGenreInput.onEndEdit.AddListener(OnCustomGenreSubmit);
+
+            CreateGenreButtons();
+
+            // 問題数の +/- はホストだけが操作できる
+            bool isHost = IsHost;
+            if (questionCountMinusButton != null) questionCountMinusButton.gameObject.SetActive(isHost);
+            if (questionCountPlusButton != null) questionCountPlusButton.gameObject.SetActive(isHost);
+            startGameButton.gameObject.SetActive(isHost);
             UpdateQuestionCountText();
 
             var session = SessionManager.Instance;
@@ -72,54 +80,10 @@ namespace GemmaQuiz.UI
                 session.OnPlayerListChanged += RefreshPlayerList;
                 session.EnsureAllPlayersRegistered();
             }
-
             LobbySync.OnSyncChanged += RefreshPlayerList;
 
             UpdateSessionInfo();
             RefreshPlayerList();
-
-            // ロビー入室時の事前生成は無効化（2026-04: Mercury-2 high reasoning で十分速いため）
-            // var nm = NetworkManager.Instance;
-            // if (nm != null && nm.IsHost) StartPreGeneration();
-        }
-
-        private void StartPreGeneration()
-        {
-            var gen = AI.QuizGenerator.Instance;
-            if (gen == null) return;
-
-            var allGenres = new[]
-            {
-                QuizGenre.AnimeGame, QuizGenre.Sports, QuizGenre.Entertainment,
-                QuizGenre.Lifestyle, QuizGenre.Society, QuizGenre.Humanities,
-                QuizGenre.Science, QuizGenre.NonGenre
-            };
-            for (int i = 0; i < 2; i++)
-            {
-                var g = allGenres[Random.Range(0, allGenres.Length)];
-                gen.PreGenerateAsync(g, 0);
-            }
-            Debug.Log("[LobbyUI] Started pre-generating random round questions");
-        }
-
-        private void ChangeQuestionCount(int delta)
-        {
-            var gen = AI.QuizGenerator.Instance;
-            if (gen == null) return;
-
-            var nm = NetworkManager.Instance;
-            if (nm != null && !nm.IsHost) return;
-
-            gen.QuestionsPerGenre = gen.QuestionsPerGenre + delta;
-            UpdateQuestionCountText();
-        }
-
-        private void UpdateQuestionCountText()
-        {
-            if (questionCountText == null) return;
-            var gen = AI.QuizGenerator.Instance;
-            int count = gen != null ? gen.QuestionsPerGenre : 5;
-            questionCountText.text = $"問題数: {count}問 / ジャンル";
         }
 
         private void OnDestroy()
@@ -130,14 +94,41 @@ namespace GemmaQuiz.UI
             LobbySync.OnSyncChanged -= RefreshPlayerList;
         }
 
+        // イベント取りこぼし保険: 数秒に一度だけ同期を取り直す
         private float syncPollTimer;
+        private const float SyncPollInterval = 2f;
+
         private void Update()
         {
             if (LobbySync.Instance == null) return;
             syncPollTimer += Time.deltaTime;
-            if (syncPollTimer < 1f) return;
+            if (syncPollTimer < SyncPollInterval) return;
             syncPollTimer = 0f;
             RefreshPlayerList();
+        }
+
+        // ===== 問題数 =====
+
+        private void ChangeQuestionCount(int delta)
+        {
+            var gen = AI.QuizGenerator.Instance;
+            if (gen == null || !IsHost) return;
+
+            gen.QuestionsPerGenre += delta;
+            LobbySync.Instance?.SetQuestionsPerGenre(gen.QuestionsPerGenre);
+            UpdateQuestionCountText();
+        }
+
+        private void UpdateQuestionCountText()
+        {
+            if (questionCountText == null) return;
+
+            // クライアントは LobbySync 経由でホストの設定値を表示する
+            var sync = LobbySync.Instance;
+            var gen = AI.QuizGenerator.Instance;
+            int count = (!IsHost && sync != null && sync.QuestionsPerGenre > 0) ? sync.QuestionsPerGenre
+                      : gen != null ? gen.QuestionsPerGenre : 5;
+            questionCountText.text = $"問題数: {count}問 / ジャンル";
         }
 
         // ===== ジャンルボタン =====
@@ -146,14 +137,7 @@ namespace GemmaQuiz.UI
         {
             if (genreButtonPrefab == null || genreButtonContainer == null) return;
 
-            var genres = new[]
-            {
-                QuizGenre.AnimeGame, QuizGenre.Sports, QuizGenre.Entertainment,
-                QuizGenre.Lifestyle, QuizGenre.Society, QuizGenre.Humanities,
-                QuizGenre.Science, QuizGenre.NonGenre
-            };
-
-            foreach (var genre in genres)
+            foreach (QuizGenre genre in System.Enum.GetValues(typeof(QuizGenre)))
             {
                 var btnObj = Instantiate(genreButtonPrefab, genreButtonContainer);
                 var btnText = btnObj.GetComponentInChildren<Text>();
@@ -164,21 +148,17 @@ namespace GemmaQuiz.UI
                 btnImage.color = deselectedColor;
                 genreButtonImages[genre] = btnImage;
 
-                // 既存のButtonコンポーネントのonClickを無効化（LongPressButtonで制御）
+                // クリック/長押しは LongPressButton で判定する (Button.onClick は使わない)
                 var btn = btnObj.GetComponent<Button>();
                 if (btn != null) btn.onClick.RemoveAllListeners();
 
-                // LongPressButton を追加
                 var longPress = btnObj.AddComponent<LongPressButton>();
                 int index = (int)genre;
-
                 longPress.OnClick += () => OnGenreSelected(index, 0);
 
                 // NonGenre以外は長押しでサブジャンルポップアップ
                 if (genre != QuizGenre.NonGenre)
-                {
                     longPress.OnLongPress += () => ShowSubGenrePopup(index);
-                }
             }
         }
 
@@ -187,39 +167,62 @@ namespace GemmaQuiz.UI
             HideSubGenrePopup();
 
             int encoded = GenreEncoding.Encode(genreIndex, subGenreIndex);
-            myEncodedGenre = encoded;
 
-            // カスタム入力をクリア
+            // カスタム入力をクリア (テキストをプログラムから書き換えても onEndEdit は発火しない)
             if (customGenreInput != null) customGenreInput.text = "";
 
-            // ボタンの色更新
             foreach (var kvp in genreButtonImages)
-            {
                 kvp.Value.color = ((int)kvp.Key == genreIndex) ? selectedColor : deselectedColor;
-            }
 
-            string displayName = GenreEncoding.GetDisplayName(genreIndex, subGenreIndex);
             if (selectedGenreText != null)
-                selectedGenreText.text = $"選択中: {displayName}";
+                selectedGenreText.text = $"選択中: {GenreEncoding.GetDisplayName(genreIndex, subGenreIndex)}";
 
-            // ローカル更新
-            var session = SessionManager.Instance;
-            var nm = NetworkManager.Instance;
-            var runner = nm?.Runner;
-            if (session != null && runner != null)
-            {
-                session.SetPlayerGenre(runner.LocalPlayer, genreIndex);
-                session.SetPlayerSubGenreById(runner.LocalPlayer.PlayerId, subGenreIndex);
-            }
+            ApplyLocalSelection(genreIndex, subGenreIndex, "");
 
-            // ネットワーク同期
             var sync = LobbySync.Instance;
+            var nm = NetworkManager.Instance;
             if (sync != null && nm != null)
-            {
                 sync.RpcSelectGenre(encoded, nm.LocalPlayerName ?? "");
-            }
 
             RefreshPlayerList();
+        }
+
+        private void OnCustomGenreSubmit(string text)
+        {
+            text = text?.Trim();
+            if (string.IsNullOrEmpty(text)) return;
+
+            HideSubGenrePopup();
+
+            foreach (var kvp in genreButtonImages)
+                kvp.Value.color = deselectedColor;
+
+            if (selectedGenreText != null)
+                selectedGenreText.text = $"選択中: {text}";
+
+            ApplyLocalSelection(GenreEncoding.CUSTOM_GENRE_CODE, 0, text);
+
+            var sync = LobbySync.Instance;
+            var nm = NetworkManager.Instance;
+            if (sync != null && nm != null)
+                sync.RpcSelectCustomGenre(text, nm.LocalPlayerName ?? "");
+
+            RefreshPlayerList();
+        }
+
+        /// <summary>
+        /// 自分の選択を SessionManager (ローカルコピー) に反映する。RPC が届く前の即時表示用。
+        /// </summary>
+        private void ApplyLocalSelection(int genreIndex, int subGenreIndex, string customText)
+        {
+            var session = SessionManager.Instance;
+            var runner = NetworkManager.Instance?.Runner;
+            if (session == null || runner == null) return;
+
+            int pid = runner.LocalPlayer.PlayerId;
+            session.SetPlayerGenre(runner.LocalPlayer, genreIndex);
+            session.SetPlayerSubGenreById(pid, subGenreIndex);
+            session.SetPlayerCustomGenreById(pid, customText);
         }
 
         // ===== サブジャンルポップアップ =====
@@ -231,134 +234,103 @@ namespace GemmaQuiz.UI
             if (subs == null || subs.Length == 0) return;
 
             HideSubGenrePopup();
-            popupGenreIndex = genreIndex;
 
             var canvas = FindAnyObjectByType<Canvas>();
             if (canvas == null) return;
 
-            // ポップアップパネル
-            subGenrePopup = new GameObject("SubGenrePopup");
-            subGenrePopup.transform.SetParent(canvas.transform, false);
+            // 画面全体を覆う半透明の背景。クリックで閉じる
+            subGenrePopupRoot = new GameObject("SubGenrePopup", typeof(RectTransform), typeof(Image), typeof(Button));
+            subGenrePopupRoot.transform.SetParent(canvas.transform, false);
+            var rootRect = subGenrePopupRoot.GetComponent<RectTransform>();
+            rootRect.anchorMin = Vector2.zero;
+            rootRect.anchorMax = Vector2.one;
+            rootRect.offsetMin = Vector2.zero;
+            rootRect.offsetMax = Vector2.zero;
+            subGenrePopupRoot.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.5f);
+            var backdropButton = subGenrePopupRoot.GetComponent<Button>();
+            backdropButton.transition = Selectable.Transition.None;
+            backdropButton.onClick.AddListener(HideSubGenrePopup);
 
-            var popupRect = subGenrePopup.AddComponent<RectTransform>();
-            popupRect.anchoredPosition = Vector2.zero;
-            popupRect.sizeDelta = new Vector2(300, (subs.Length + 1) * 44 + 20);
+            // ポップアップパネル本体
+            var panel = new GameObject("Panel", typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup), typeof(ContentSizeFitter));
+            panel.transform.SetParent(subGenrePopupRoot.transform, false);
+            var panelRect = panel.GetComponent<RectTransform>();
+            panelRect.sizeDelta = new Vector2(popupWidth, 0);
+            panel.GetComponent<Image>().color = new Color(0.1f, 0.1f, 0.2f, 0.98f);
 
-            // 背景
-            var popupImage = subGenrePopup.AddComponent<Image>();
-            popupImage.color = new Color(0.1f, 0.1f, 0.2f, 0.95f);
-
-            // レイアウト
-            var layout = subGenrePopup.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(10, 10, 10, 10);
-            layout.spacing = 4;
+            var layout = panel.GetComponent<VerticalLayoutGroup>();
+            layout.padding = new RectOffset(14, 14, 14, 14);
+            layout.spacing = 6;
             layout.childForceExpandWidth = true;
             layout.childForceExpandHeight = false;
+            layout.childControlHeight = true;
+            layout.childControlWidth = true;
+            panel.GetComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            var fitter = subGenrePopup.AddComponent<ContentSizeFitter>();
-            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            // タイトル
+            AddPopupLabel(panel.transform, $"{genre.ToJapanese()} のサブジャンル", popupFontSize + 2);
 
-            // 「すべて」ボタン
-            AddSubGenreButton($"{genre.ToJapanese()} (すべて)", genreIndex, 0);
-
-            // 各サブジャンル
+            // 「すべて」+ 各サブジャンル
+            AddPopupButton(panel.transform, $"{genre.ToJapanese()} (すべて)", new Color(0.25f, 0.45f, 0.35f), () => OnGenreSelected(genreIndex, 0));
             for (int i = 0; i < subs.Length; i++)
             {
-                AddSubGenreButton(subs[i], genreIndex, i + 1);
+                int si = i + 1;
+                AddPopupButton(panel.transform, subs[i], new Color(0.2f, 0.2f, 0.35f), () => OnGenreSelected(genreIndex, si));
             }
+
+            // 閉じる
+            AddPopupButton(panel.transform, "閉じる", new Color(0.35f, 0.2f, 0.2f), HideSubGenrePopup);
         }
 
-        private void AddSubGenreButton(string label, int genreIndex, int subGenreIndex)
+        private void AddPopupLabel(Transform parent, string label, int fontSize)
+        {
+            var obj = new GameObject("Title", typeof(RectTransform), typeof(Text), typeof(LayoutElement));
+            obj.transform.SetParent(parent, false);
+            obj.GetComponent<LayoutElement>().preferredHeight = fontSize + 18;
+            var text = obj.GetComponent<Text>();
+            text.text = label;
+            text.font = JapaneseFont.Get();
+            text.fontSize = fontSize;
+            text.color = Color.white;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.horizontalOverflow = HorizontalWrapMode.Overflow;
+        }
+
+        private void AddPopupButton(Transform parent, string label, Color color, UnityEngine.Events.UnityAction onClick)
         {
             var btnObj = DefaultControls.CreateButton(new DefaultControls.Resources());
-            btnObj.transform.SetParent(subGenrePopup.transform, false);
-
-            var le = btnObj.AddComponent<LayoutElement>();
-            le.preferredHeight = 40;
-
-            var btnImage = btnObj.GetComponent<Image>();
-            btnImage.color = new Color(0.2f, 0.2f, 0.35f, 1f);
+            btnObj.transform.SetParent(parent, false);
+            btnObj.AddComponent<LayoutElement>().preferredHeight = popupFontSize + 24;
+            btnObj.GetComponent<Image>().color = color;
 
             var text = btnObj.GetComponentInChildren<Text>();
             if (text != null)
             {
                 text.text = label;
-                text.fontSize = 18;
-                text.color = Color.white;
                 text.font = JapaneseFont.Get();
+                text.fontSize = popupFontSize;
+                text.color = Color.white;
                 text.verticalOverflow = VerticalWrapMode.Overflow;
                 text.horizontalOverflow = HorizontalWrapMode.Overflow;
             }
 
-            var btn = btnObj.GetComponent<Button>();
-            int gi = genreIndex, si = subGenreIndex;
-            btn.onClick.AddListener(() => OnGenreSelected(gi, si));
-
-            subGenreButtons.Add(btnObj);
+            btnObj.GetComponent<Button>().onClick.AddListener(onClick);
         }
 
         private void HideSubGenrePopup()
         {
-            if (subGenrePopup != null)
-            {
-                Destroy(subGenrePopup);
-                subGenrePopup = null;
-            }
-            subGenreButtons.Clear();
-            popupGenreIndex = -1;
-        }
-
-        // ===== カスタムジャンル入力 =====
-
-        private void OnCustomGenreSubmit(string text)
-        {
-            text = text?.Trim();
-            if (string.IsNullOrEmpty(text)) return;
-
-            HideSubGenrePopup();
-
-            myEncodedGenre = GenreEncoding.CUSTOM_GENRE_CODE * 100;
-
-            // ジャンルボタンの選択色をリセット
-            foreach (var kvp in genreButtonImages)
-                kvp.Value.color = deselectedColor;
-
-            if (selectedGenreText != null)
-                selectedGenreText.text = $"選択中: {text}";
-
-            // ローカル更新
-            var session = SessionManager.Instance;
-            var nm = NetworkManager.Instance;
-            var runner = nm?.Runner;
-            if (session != null && runner != null)
-            {
-                session.SetPlayerGenre(runner.LocalPlayer, GenreEncoding.CUSTOM_GENRE_CODE);
-                session.SetPlayerCustomGenreById(runner.LocalPlayer.PlayerId, text);
-                // isReady はSetPlayerGenre で既にtrue
-            }
-
-            // ネットワーク同期
-            var sync = LobbySync.Instance;
-            if (sync != null && nm != null)
-            {
-                sync.RpcSelectCustomGenre(text, nm.LocalPlayerName ?? "");
-            }
-
-            RefreshPlayerList();
+            if (subGenrePopupRoot == null) return;
+            Destroy(subGenrePopupRoot);
+            subGenrePopupRoot = null;
         }
 
         // ===== セッション情報 =====
 
         private void UpdateSessionInfo()
         {
-            var nm = NetworkManager.Instance;
-            if (nm == null || nm.Runner == null) return;
-
-            var runner = nm.Runner;
-            if (runner.SessionInfo != null)
-            {
-                sessionNameText.text = $"セッション: {runner.SessionInfo.Name}";
-            }
+            var runner = NetworkManager.Instance?.Runner;
+            if (runner == null || runner.SessionInfo == null || sessionNameText == null) return;
+            sessionNameText.text = $"セッション: {runner.SessionInfo.Name}";
         }
 
         // ===== プレイヤーリスト =====
@@ -368,24 +340,31 @@ namespace GemmaQuiz.UI
             var session = SessionManager.Instance;
             if (session == null) return;
 
-            var players = session.GetSortedPlayerList();
-            var nm = NetworkManager.Instance;
-            var runner = nm != null ? nm.Runner : null;
-
-            int readyCount = 0;
-
             var sync = LobbySync.Instance;
+            var runner = NetworkManager.Instance?.Runner;
 
-            int hostPlayerId = -1;
-            if (sync != null) hostPlayerId = sync.HostPlayerId;
+            // 先に LobbySync の同期名を SessionManager に反映しておく
+            // (SetPlayerName は OnPlayerListChanged を発火するので、描画ループの中では呼ばない)
+            if (sync != null)
+            {
+                for (int slot = 0; slot < LobbySync.MaxSlots; slot++)
+                {
+                    if (sync.IsSlotEmpty(slot)) continue;
+                    var name = sync.PlayerNames[slot].ToString();
+                    if (!string.IsNullOrEmpty(name))
+                        session.SetPlayerName(sync.PlayerSlotIds[slot], name);
+                }
+            }
+
+            var players = session.GetSortedPlayerList();
+
+            int hostPlayerId = sync != null ? sync.HostPlayerId : -1;
             if (hostPlayerId < 0 && runner != null && runner.IsServer)
                 hostPlayerId = runner.LocalPlayer.PlayerId;
 
+            // エントリ数を合わせる
             while (entryInstances.Count < players.Count)
-            {
-                var newObj = Instantiate(playerListEntryPrefab, playerListContent);
-                entryInstances.Add(newObj);
-            }
+                entryInstances.Add(Instantiate(playerListEntryPrefab, playerListContent));
             while (entryInstances.Count > players.Count)
             {
                 var last = entryInstances[entryInstances.Count - 1];
@@ -393,53 +372,36 @@ namespace GemmaQuiz.UI
                 if (last != null) Destroy(last);
             }
 
+            int readyCount = 0;
             for (int i = 0; i < players.Count; i++)
             {
                 var playerData = players[i];
                 var entryObj = entryInstances[i];
                 if (entryObj == null) continue;
-                var entry = entryObj.GetComponent<PlayerListEntry>();
 
-                bool playerIsHost = (hostPlayerId >= 0 && playerData.playerRef.PlayerId == hostPlayerId);
+                int pid = playerData.playerRef.PlayerId;
+                bool playerIsHost = hostPlayerId >= 0 && pid == hostPlayerId;
 
                 int encoded = -1;
-                string syncedName = playerData.playerName;
                 string customText = "";
-
-                if (sync != null)
+                int slot = sync != null ? sync.FindSlot(pid) : -1;
+                if (slot >= 0)
                 {
-                    int slot = -1;
-                    for (int j = 0; j < 8; j++)
-                    {
-                        if (sync.PlayerSlotIds[j] == playerData.playerRef.PlayerId) { slot = j; break; }
-                    }
-                    if (slot >= 0)
-                    {
-                        encoded = sync.SelectedGenres[slot];
-                        customText = sync.CustomGenreTexts[slot].ToString();
-                        var name = sync.PlayerNames[slot].ToString();
-                        if (!string.IsNullOrEmpty(name))
-                        {
-                            syncedName = name;
-                            session.SetPlayerName(playerData.playerRef.PlayerId, name);
-                        }
-                    }
+                    encoded = sync.SelectedGenres[slot];
+                    customText = sync.CustomGenreTexts[slot].ToString();
                 }
-                else
+                else if (sync == null && playerData.selectedGenreIndex >= 0)
                 {
-                    // フォールバック
-                    if (playerData.selectedGenreIndex >= 0)
-                        encoded = GenreEncoding.Encode(playerData.selectedGenreIndex, playerData.selectedSubGenreIndex);
+                    encoded = GenreEncoding.Encode(playerData.selectedGenreIndex, playerData.selectedSubGenreIndex);
                     customText = playerData.customGenreText;
                 }
 
                 string roleText;
                 if (encoded >= 0)
                 {
-                    if (GenreEncoding.IsCustomGenre(encoded) && !string.IsNullOrEmpty(customText))
-                        roleText = customText;
-                    else
-                        roleText = GenreEncoding.GetDisplayName(encoded);
+                    roleText = (GenreEncoding.IsCustomGenre(encoded) && !string.IsNullOrEmpty(customText))
+                        ? customText
+                        : GenreEncoding.GetDisplayName(encoded);
                     readyCount++;
                 }
                 else
@@ -447,76 +409,69 @@ namespace GemmaQuiz.UI
                     roleText = "選択中...";
                 }
 
-                string displayName = playerIsHost ? $"{syncedName} [Host]" : syncedName;
-                if (entry != null)
-                    entry.Setup(displayName, playerIsHost, roleText);
+                string displayName = playerIsHost ? $"{playerData.playerName} [Host]" : playerData.playerName;
+                entryObj.GetComponent<PlayerListEntry>()?.Setup(displayName, roleText);
             }
 
-            int maxPlayers = (runner != null && runner.SessionInfo != null && runner.SessionInfo.IsValid && runner.SessionInfo.MaxPlayers > 0) ? runner.SessionInfo.MaxPlayers : 8;
-            playerCountText.text = $"{session.PlayerCount} / {maxPlayers}";
+            int maxPlayers = (runner != null && runner.SessionInfo != null && runner.SessionInfo.IsValid && runner.SessionInfo.MaxPlayers > 0)
+                ? runner.SessionInfo.MaxPlayers : LobbySync.MaxSlots;
+            if (playerCountText != null)
+                playerCountText.text = $"{session.PlayerCount} / {maxPlayers}";
 
-            bool isHost = nm != null && nm.IsHost;
+            UpdateQuestionCountText();
+
+            bool isHost = IsHost;
             startGameButton.gameObject.SetActive(isHost);
 
             bool allReady = readyCount >= session.PlayerCount && session.PlayerCount >= 1;
             startGameButton.interactable = allReady;
 
             if (allReady)
-            {
-                SetStatus("全員準備完了! ゲームを開始できます");
-            }
+                SetStatus(isHost ? "全員準備完了! ゲームを開始できます" : "全員準備完了! ホストの開始を待っています");
             else if (session.PlayerCount >= 1)
-            {
                 SetStatus($"ジャンル選択待ち ({readyCount}/{session.PlayerCount})");
-            }
             else
-            {
                 SetStatus("プレイヤーを待っています...");
-            }
         }
 
-        // ===== ゲーム開始 =====
+        // ===== ゲーム開始 / 退出 =====
 
         private void OnStartGame()
         {
-            if (!NetworkManager.Instance.IsHost) return;
+            if (!IsHost) return;
 
             SetStatus("クイズを準備中...");
             startGameButton.interactable = false;
 
             CommitLobbyDataToSession();
-
             NetworkManager.Instance.LoadScene("QuizScene");
         }
 
+        /// <summary>
+        /// シーン遷移前に LobbySync の内容を SessionManager に書き写す (QuizScene 側のフォールバック用)。
+        /// </summary>
         private void CommitLobbyDataToSession()
         {
             var sync = LobbySync.Instance;
             var session = SessionManager.Instance;
             if (sync == null || session == null) return;
 
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < LobbySync.MaxSlots; i++)
             {
+                if (sync.IsSlotEmpty(i)) continue;
                 int pid = sync.PlayerSlotIds[i];
-                if (pid < 0) continue;
                 int encoded = sync.SelectedGenres[i];
                 string name = sync.PlayerNames[i].ToString();
 
                 if (!string.IsNullOrEmpty(name))
                     session.SetPlayerName(pid, name);
 
-                if (encoded >= 0)
-                {
-                    var (genreIdx, subIdx) = GenreEncoding.Decode(encoded);
-                    session.SetPlayerGenreById(pid, genreIdx);
-                    session.SetPlayerSubGenreById(pid, subIdx);
-
-                    if (GenreEncoding.IsCustomGenre(encoded))
-                    {
-                        string customText = sync.CustomGenreTexts[i].ToString();
-                        session.SetPlayerCustomGenreById(pid, customText);
-                    }
-                }
+                if (encoded < 0) continue;
+                var (genreIdx, subIdx) = GenreEncoding.Decode(encoded);
+                session.SetPlayerGenreById(pid, genreIdx);
+                session.SetPlayerSubGenreById(pid, subIdx);
+                if (GenreEncoding.IsCustomGenre(encoded))
+                    session.SetPlayerCustomGenreById(pid, sync.CustomGenreTexts[i].ToString());
             }
             Debug.Log("[LobbyUI] Committed lobby data to SessionManager before scene change");
         }
