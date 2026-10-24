@@ -1,13 +1,16 @@
 using System;
+using System.IO;
 using UnityEngine;
 
 namespace GemmaQuiz.AI
 {
     /// <summary>
     /// AIプロバイダー用の資格情報をまとめた設定。
-    /// Resources/Config.json から読み込まれる。CI/CDでは
-    /// GitHub Secret の内容 (JSON丸ごと) を Resources/Config.json に書き出して注入する。
-    /// エディタ開発では UserSettings/Config.json (gitignore済) が優先される。
+    /// 読み込み優先順:
+    ///  1. UserSettings/Config.json (エディタのみ。gitignore済なのでローカル開発用)
+    ///  2. Resources/Config.json   (CIが GitHub Secret AI_CONFIG_JSON の内容をそのまま書き出す)
+    /// JSON形式:
+    ///  {"inception_api_key":"...","gemini_api_key":"...","cerebras_api_key":"...","groq_api_key":"..."}
     /// </summary>
     [Serializable]
     public class AIConfig
@@ -22,12 +25,6 @@ namespace GemmaQuiz.AI
         public bool HasCerebrasKey => !string.IsNullOrEmpty(cerebras_api_key);
         public bool HasGroqKey => !string.IsNullOrEmpty(groq_api_key);
 
-        /// <summary>
-        /// 設定を読み込む。優先順:
-        ///  1. UserSettings/Config.json (エディタのみ, gitignore済)
-        ///  2. Resources/Config.json (CIで書き出される)
-        ///  3. Legacy: Resources/InceptionKey.txt + UserSettings/InceptionKey.txt
-        /// </summary>
         public static AIConfig Load()
         {
             var cfg = new AIConfig();
@@ -35,18 +32,10 @@ namespace GemmaQuiz.AI
 #if UNITY_EDITOR
             try
             {
-                var userJsonPath = System.IO.Path.Combine(
-                    System.IO.Directory.GetParent(Application.dataPath).FullName,
-                    "UserSettings", "Config.json");
-                if (System.IO.File.Exists(userJsonPath))
-                {
-                    var text = System.IO.File.ReadAllText(userJsonPath);
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        var parsed = JsonUtility.FromJson<AIConfig>(text);
-                        if (parsed != null) cfg = parsed;
-                    }
-                }
+                var userJsonPath = Path.Combine(
+                    Directory.GetParent(Application.dataPath).FullName, "UserSettings", "Config.json");
+                if (File.Exists(userJsonPath))
+                    cfg.MergeFrom(TryParse(File.ReadAllText(userJsonPath), "UserSettings/Config.json"));
             }
             catch (Exception e)
             {
@@ -54,62 +43,37 @@ namespace GemmaQuiz.AI
             }
 #endif
 
-            if (!cfg.HasInceptionKey || !cfg.HasGeminiKey || !cfg.HasCerebrasKey || !cfg.HasGroqKey)
-            {
-                var asset = Resources.Load<TextAsset>("Config");
-                if (asset != null && !string.IsNullOrWhiteSpace(asset.text))
-                {
-                    try
-                    {
-                        var parsed = JsonUtility.FromJson<AIConfig>(asset.text);
-                        if (parsed != null)
-                        {
-                            if (!cfg.HasInceptionKey && parsed.HasInceptionKey)
-                                cfg.inception_api_key = parsed.inception_api_key;
-                            if (!cfg.HasGeminiKey && parsed.HasGeminiKey)
-                                cfg.gemini_api_key = parsed.gemini_api_key;
-                            if (!cfg.HasCerebrasKey && parsed.HasCerebrasKey)
-                                cfg.cerebras_api_key = parsed.cerebras_api_key;
-                            if (!cfg.HasGroqKey && parsed.HasGroqKey)
-                                cfg.groq_api_key = parsed.groq_api_key;
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.LogWarning($"[AIConfig] Resources/Config.json parse error: {e.Message}");
-                    }
-                }
-            }
-
-            // Legacy: Inception単体のプレーンテキスト
-            if (!cfg.HasInceptionKey)
-            {
-#if UNITY_EDITOR
-                try
-                {
-                    var legacyUser = System.IO.Path.Combine(
-                        System.IO.Directory.GetParent(Application.dataPath).FullName,
-                        "UserSettings", "InceptionKey.txt");
-                    if (System.IO.File.Exists(legacyUser))
-                    {
-                        var t = System.IO.File.ReadAllText(legacyUser).Trim();
-                        if (!string.IsNullOrEmpty(t)) cfg.inception_api_key = t;
-                    }
-                }
-                catch { /* ignore */ }
-#endif
-                if (!cfg.HasInceptionKey)
-                {
-                    var legacyRes = Resources.Load<TextAsset>("InceptionKey");
-                    if (legacyRes != null)
-                    {
-                        var t = legacyRes.text.Trim();
-                        if (!string.IsNullOrEmpty(t)) cfg.inception_api_key = t;
-                    }
-                }
-            }
+            var asset = Resources.Load<TextAsset>("Config");
+            if (asset != null)
+                cfg.MergeFrom(TryParse(asset.text, "Resources/Config.json"));
 
             return cfg;
+        }
+
+        /// <summary>
+        /// 自分に無いキーだけ other から補う。
+        /// </summary>
+        private void MergeFrom(AIConfig other)
+        {
+            if (other == null) return;
+            if (!HasInceptionKey) inception_api_key = other.inception_api_key;
+            if (!HasGeminiKey) gemini_api_key = other.gemini_api_key;
+            if (!HasCerebrasKey) cerebras_api_key = other.cerebras_api_key;
+            if (!HasGroqKey) groq_api_key = other.groq_api_key;
+        }
+
+        private static AIConfig TryParse(string text, string sourceLabel)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            try
+            {
+                return JsonUtility.FromJson<AIConfig>(text);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[AIConfig] {sourceLabel} parse error: {e.Message}");
+                return null;
+            }
         }
     }
 }

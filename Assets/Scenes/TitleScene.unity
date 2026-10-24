@@ -3859,12 +3859,21 @@ MonoBehaviour:
   ollamaUrl: http://localhost:11434
   ollamaModel: gemma4:e4b
   inceptionUrl: https://api.inceptionlabs.ai/v1
-  inceptionModel: mercury-2
+  inceptionModel: mercury-3
   inceptionReasoningEffort: medium
   inceptionApiKey: 
+  cerebrasUrl: https://api.cerebras.ai/v1
+  cerebrasModel: llama3.1-8b
+  cerebrasApiKey: 
+  groqUrl: https://api.groq.com/openai/v1
+  groqModel: llama-3.3-70b-versatile
+  groqApiKey: 
+  geminiModel: gemini-2.5-flash-lite
+  geminiApiKey: 
   temperature: 0.7
   questionsPerGenre: 5
-  maxRetries: 6
+  maxRetries: 4
+  fallbackRetries: 2
   enableValidationPass: 0
 --- !u!1 &1494874648
 GameObject:
@@ -4586,7 +4595,7 @@ MonoBehaviour:
   m_LineType: 0
   m_HideMobileInput: 0
   m_CharacterValidation: 0
-  m_CharacterLimit: 0
+  m_CharacterLimit: 16
   m_OnSubmit:
     m_PersistentCalls:
       m_Calls: []

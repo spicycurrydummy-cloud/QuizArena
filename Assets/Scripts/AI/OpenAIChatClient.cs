@@ -1,14 +1,14 @@
-using System;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Networking;
 
 namespace GemmaQuiz.AI
 {
     /// <summary>
     /// OpenAI互換 /chat/completions エンドポイントを叩く汎用クライアント。
-    /// Cerebras / Groq などで共有する。Structured Output は json_schema 形式を使う。
+    /// Inception (Mercury 3) / Cerebras / Groq で共有する。
+    ///  - reasoningEffort: Mercury など reasoning_effort をサポートするAPI向け (null で送らない)
+    ///  - supportsJsonSchema: true なら response_format=json_schema、false なら json_object
     /// </summary>
     public class OpenAIChatClient : IQuizAIClient
     {
@@ -19,6 +19,8 @@ namespace GemmaQuiz.AI
         private readonly float temperature;
         private readonly int maxTokens;
         private readonly string providerLabel;
+        private readonly string reasoningEffort;
+        private readonly bool supportsJsonSchema;
 
         public OpenAIChatClient(
             string apiKey,
@@ -26,108 +28,46 @@ namespace GemmaQuiz.AI
             string model,
             float temperature = 0.4f,
             int maxTokens = 4096,
-            string providerLabel = "OpenAIChat")
+            string providerLabel = "OpenAIChat",
+            string reasoningEffort = null,
+            bool supportsJsonSchema = false)
         {
             this.apiKey = apiKey;
             var trimmed = (baseUrl ?? "").TrimEnd('/');
-            this.chatUrl = $"{trimmed}/chat/completions";
-            this.modelsUrl = $"{trimmed}/models";
+            chatUrl = $"{trimmed}/chat/completions";
+            modelsUrl = $"{trimmed}/models";
             this.model = model;
             this.temperature = temperature;
             this.maxTokens = maxTokens;
             this.providerLabel = providerLabel;
+            this.reasoningEffort = string.IsNullOrEmpty(reasoningEffort) ? null : reasoningEffort;
+            this.supportsJsonSchema = supportsJsonSchema;
         }
 
         public async Task<string> GenerateAsync(string prompt, string jsonSchema = null)
         {
-            // Cerebras/Groq の多くのモデルは json_schema 非対応なので json_object で統一する。
-            // スキーマ要件はプロンプト側 (QuizPromptBuilder) で記述済み。
-            string responseFormatBlock = "\"response_format\":{\"type\":\"json_object\"}";
+            var sb = new StringBuilder(prompt.Length + 512);
+            sb.Append("{\"model\":\"").Append(AIHttp.EscapeJson(model)).Append("\",");
+            sb.Append("\"messages\":[{\"role\":\"user\",\"content\":\"").Append(AIHttp.EscapeJson(prompt)).Append("\"}],");
+            sb.Append("\"temperature\":").Append(AIHttp.FormatFloat(temperature)).Append(',');
+            sb.Append("\"max_tokens\":").Append(maxTokens).Append(',');
+            if (reasoningEffort != null)
+                sb.Append("\"reasoning_effort\":\"").Append(AIHttp.EscapeJson(reasoningEffort)).Append("\",");
 
-            var json = $"{{\"model\":\"{EscapeJson(model)}\","
-                + $"\"messages\":[{{\"role\":\"user\",\"content\":\"{EscapeJson(prompt)}\"}}],"
-                + $"\"temperature\":{temperature.ToString(System.Globalization.CultureInfo.InvariantCulture)},"
-                + $"\"max_tokens\":{maxTokens},"
-                + $"{responseFormatBlock}}}";
+            bool useSchema = supportsJsonSchema && !string.IsNullOrEmpty(jsonSchema) && jsonSchema.TrimStart().StartsWith("{");
+            if (useSchema)
+                sb.Append("\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"quiz\",\"strict\":true,\"schema\":")
+                  .Append(jsonSchema).Append("}}");
+            else
+                sb.Append("\"response_format\":{\"type\":\"json_object\"}");
+            sb.Append('}');
 
             Debug.Log($"[{providerLabel}] POST {chatUrl} (model: {model}, prompt length: {prompt.Length})");
 
-            var bodyBytes = Encoding.UTF8.GetBytes(json);
-            var request = new UnityWebRequest(chatUrl, "POST");
-            try
-            {
-                request.uploadHandler = new UploadHandlerRaw(bodyBytes);
-                request.downloadHandler = new DownloadHandlerBuffer();
-                request.SetRequestHeader("Content-Type", "application/json");
-                request.SetRequestHeader("Authorization", $"Bearer {apiKey}");
-                request.timeout = 120;
-
-                var operation = request.SendWebRequest();
-                while (!operation.isDone) await Task.Yield();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    var errorDetail = request.downloadHandler?.text ?? "no body";
-                    throw new Exception($"{providerLabel} API error: {request.error} (Response: {errorDetail})");
-                }
-
-                var responseJson = request.downloadHandler.text;
-                Debug.Log($"[{providerLabel}] Response length: {responseJson.Length}");
-
-                var response = JsonUtility.FromJson<ChatCompletionResponse>(responseJson);
-                if (response?.choices == null || response.choices.Length == 0)
-                    throw new Exception($"{providerLabel} API: choices が空です");
-
-                return response.choices[0].message.content;
-            }
-            finally
-            {
-                request.Dispose();
-            }
+            var responseJson = await AIHttp.PostJsonAsync(chatUrl, sb.ToString(), apiKey, providerLabel);
+            return AIHttp.ExtractChatContent(responseJson, providerLabel);
         }
 
-        public async Task<bool> IsAvailableAsync()
-        {
-            var request = UnityWebRequest.Get(modelsUrl);
-            try
-            {
-                request.SetRequestHeader("Authorization", $"Bearer {apiKey}");
-                request.timeout = 5;
-                var operation = request.SendWebRequest();
-                while (!operation.isDone) await Task.Yield();
-                return request.result == UnityWebRequest.Result.Success;
-            }
-            finally
-            {
-                request.Dispose();
-            }
-        }
-
-        private static string EscapeJson(string s)
-        {
-            return s.Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"")
-                    .Replace("\n", "\\n")
-                    .Replace("\r", "\\r")
-                    .Replace("\t", "\\t");
-        }
-
-        [Serializable]
-        private class ChatCompletionResponse
-        {
-            public Choice[] choices;
-        }
-
-        [Serializable]
-        private class Choice
-        {
-            public Message message;
-        }
-
-        [Serializable]
-        private class Message
-        {
-            public string content;
-        }
+        public Task<bool> IsAvailableAsync() => AIHttp.GetOkAsync(modelsUrl, apiKey);
     }
 }

@@ -30,9 +30,10 @@ jobs:
             Library-WebGL-
             Library-
 
-      # AI設定 (Inception + Gemini キー) を Resources/Config.json に書き出し。
-      # GitHub Secret AI_CONFIG_JSON には以下のJSONをそのまま登録する:
-      #   {"inception_api_key":"sk_...","gemini_api_key":"AIza..."}
+      # AI設定 (APIキー一式) を Resources/Config.json に書き出し。
+      # GitHub Secret AI_CONFIG_JSON には以下のJSONをそのまま登録する (不要なキーは省略可):
+      #   {"inception_api_key":"sk_...","gemini_api_key":"AIza...","cerebras_api_key":"csk-...","groq_api_key":"gsk_..."}
+      # inception_api_key は Mercury 3 用のキー。モデル名はコード側 (QuizGenerator.inceptionModel) で指定する。
       - name: Inject AI config
         run: |
           mkdir -p Assets/Resources
