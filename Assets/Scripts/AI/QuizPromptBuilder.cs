@@ -110,6 +110,7 @@ Question content rules:
 - The correct answer must be a factually certain proper noun or number
 - The three wrong answers must be real, well-known entities from the same category
 - Wrong answers must come from the same category as the correct one but must not themselves be correct substitutes
+- The four choices must be clearly distinct entities: never use another name, abbreviation, spelling variant, or broader/narrower form of another choice (e.g. 東京 and 東京都, アメリカ and 米国, ゴッホ and フィンセント・ファン・ゴッホ)
 - For hard questions, make wrong answers plausible distractors
 
 Question-text prohibitions (critical):
@@ -215,14 +216,16 @@ Output JSON only, in this shape:
             var sb = new StringBuilder(2048);
             sb.Append(@"You are the fact-checker for a Japanese four-choice trivia quiz used in a casual party game. Use Google Search to verify every item below.
 
-For each item give exactly one verdict:
-- ""ok"": the given answer is correct, and none of the wrong choices could also be accepted as a correct answer
+For each item give exactly one verdict about the given answer:
+- ""ok"": the given answer is correct
 - ""wrong"": the given answer is incorrect. If one of the wrong choices is actually the correct answer, copy that choice EXACTLY into ""correct_answer""; otherwise leave ""correct_answer"" empty. Never use ""wrong"" when the given answer itself is correct
-- ""unsure"": you could not confirm the fact, the question is ambiguous, has more than one valid answer, or depends on a fact that changes over time
+- ""unsure"": you could not confirm the fact, the question is ambiguous, or it depends on a fact that changes over time
+
+Then check the three wrong choices. In ""also_correct"" list (copied EXACTLY) every wrong choice that would also have to be accepted as a correct answer to the question: another name, abbreviation, spelling variant, or broader/narrower form of the given answer (e.g. 東京 / 東京都, アメリカ / 米国, ゴッホ / フィンセント・ファン・ゴッホ), or another entity that satisfies the question just as well. Use an empty list when all three wrong choices are definitely incorrect.
 
 Rules:
 - Judge the answer against ALL conditions stated in the question (nationality, era, category, ""Japanese"", ""first"", etc.), not only the general topic
-- If the premise is debatable or another choice could reasonably be argued, answer ""unsure"" rather than guessing
+- If the premise is debatable, answer ""unsure"" rather than guessing
 - Be strict about factual correctness, but do not reject a question only because it is easy or well known
 
 Items:
@@ -242,7 +245,7 @@ Items:
 
             sb.Append(@"
 Output format: exactly ONE JSON object and nothing else — no markdown fences, no numbering, do not repeat the questions:
-{""results"":[{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""note"":""短い理由 (日本語)""}]}
+{""results"":[{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""also_correct"":[],""note"":""短い理由 (日本語)""}]}
 Include one result for every item, in order.");
             return sb.ToString();
         }
@@ -253,33 +256,37 @@ Include one result for every item, in order.");
         public static string BuildVerificationToJson(string notes, int itemCount)
         {
             return $@"Convert the following fact-check notes about a quiz into JSON. There are {itemCount} items numbered 1 to {itemCount}.
-For each item output: ""id"", ""verdict"" (one of ok / wrong / unsure; use ""unsure"" when the notes give no clear verdict for that item), ""correct_answer"" (the alternative answer the notes name, otherwise an empty string) and a short ""note"" in Japanese.
+For each item output: ""id"", ""verdict"" (one of ok / wrong / unsure; use ""unsure"" when the notes give no clear verdict for that item), ""correct_answer"" (the alternative answer the notes name, otherwise an empty string), ""also_correct"" (the wrong choices the notes say would also be correct, copied exactly; otherwise an empty array) and a short ""note"" in Japanese.
 Do not add items that are not in the notes.
 
 Notes:
 {notes}
 
 Output shape:
-{{""results"":[{{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""note"":""短い理由""}}]}}";
+{{""results"":[{{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""also_correct"":[],""note"":""短い理由""}}]}}";
         }
 
         /// <summary>
         /// Wikipedia 検索で集めた根拠文をもとに生成モデル自身に正解を判定させるプロンプト
-        /// (Gemini の無料枠が無いときの検証経路。根拠が無いだけでは落とさない)。evidence[i] は items[i] に対応。
+        /// (Gemini の無料枠が無いときの検証経路。根拠が無いだけでは落とさない)。
+        /// evidence[i] は items[i] の根拠、wrongNotes[i] は items[i] の誤答それぞれの記事冒頭 (無ければ空)。
         /// </summary>
-        public static string BuildEvidenceVerification(IList<(int id, string question, string answer, string[] wrongs)> items, IList<string> evidence)
+        public static string BuildEvidenceVerification(IList<(int id, string question, string answer, string[] wrongs)> items,
+            IList<string> evidence, IList<string> wrongNotes = null)
         {
-            var sb = new StringBuilder(4096);
-            sb.Append(@"You are the fact-checker for a Japanese four-choice trivia quiz used in a casual party game. For each item you get the question, the intended answer, the wrong choices, and evidence excerpts retrieved from Japanese Wikipedia.
+            var sb = new StringBuilder(6144);
+            sb.Append(@"You are the fact-checker for a Japanese four-choice trivia quiz used in a casual party game. For each item you get the question, the intended answer, the wrong choices, evidence excerpts retrieved from Japanese Wikipedia, and (when available) the opening lines of the Wikipedia article for each wrong choice.
 
-Give exactly one verdict per item:
+Give exactly one verdict per item about the intended answer:
 - ""wrong"": the evidence or well-established knowledge clearly contradicts the intended answer, or one of the wrong choices is actually the correct answer. Put that choice in ""correct_answer"" when it is one of the listed choices, otherwise leave it empty
 - ""ok"": the evidence supports the intended answer, or nothing contradicts it and the answer is consistent with well-established knowledge
-- ""unsure"": the question itself is ambiguous, has more than one valid answer, or depends on a fact that changes over time
+- ""unsure"": the question itself is ambiguous or depends on a fact that changes over time
+
+Then check the wrong choices. In ""also_correct"" list (copied EXACTLY) every wrong choice that would also have to be accepted as a correct answer to the question: another name, abbreviation, spelling variant, or broader/narrower form of the intended answer (e.g. 東京 / 東京都, アメリカ / 米国), or another entity that satisfies the question just as well. Use an empty list when all three wrong choices are clearly incorrect.
 
 Rules:
 - Judge against ALL conditions stated in the question (nationality, era, category, ""first"", etc.)
-- Only answer ""wrong"" when you are confident; missing evidence alone is never a reason for ""wrong""
+- Only answer ""wrong"", and only list a choice in ""also_correct"", when you are confident; missing evidence alone is never a reason
 - Never use ""wrong"" when the intended answer itself is correct
 
 Items:
@@ -297,11 +304,15 @@ Items:
                 }
                 sb.Append('\n');
                 string ev = evidence != null && i < evidence.Count ? evidence[i] : null;
-                sb.Append("   evidence: ").Append(string.IsNullOrWhiteSpace(ev) ? "(none found)" : ev.Trim()).Append("\n\n");
+                sb.Append("   evidence: ").Append(string.IsNullOrWhiteSpace(ev) ? "(none found)" : ev.Trim()).Append('\n');
+                string notes = wrongNotes != null && i < wrongNotes.Count ? wrongNotes[i] : null;
+                if (!string.IsNullOrWhiteSpace(notes))
+                    sb.Append("   about the wrong choices:\n").Append(notes.Trim('\n', '\r')).Append('\n');
+                sb.Append('\n');
             }
 
             sb.Append(@"Output exactly ONE JSON object and nothing else:
-{""results"":[{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""note"":""短い理由 (日本語)""}]}
+{""results"":[{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""also_correct"":[],""note"":""短い理由 (日本語)""}]}
 Include one result for every item, in order.");
             return sb.ToString();
         }

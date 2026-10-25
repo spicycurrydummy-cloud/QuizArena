@@ -437,6 +437,11 @@ namespace GemmaQuiz.AI
                     // 正解を裏取り (誤り/不確かな問題はここで落とす)
                     await VerifyAsync(questionSet, label, quiet);
 
+                    // 形式チェック (選択肢の重複・問題文に正解が含まれる等) もここで落とし、不足分を次の試行で補充できるようにする
+                    ConvertRawToChoices(questionSet);
+                    SanitizeQuestions(questionSet);
+                    ValidateQuestions(questionSet, throwIfEmpty: false);
+
                     // 同じ問題文は重複として捨てつつ蓄積
                     int added = 0;
                     foreach (var q in questionSet.questions)
@@ -630,8 +635,10 @@ namespace GemmaQuiz.AI
 
         /// <summary>
         /// 生成直後の問題 (answer/wrongs 形式) の正解を裏取りし、誤りと判定された問題を除外する (足りない分は次の試行で補充される)。
+        ///  0. 選択肢の記事を Wikipedia で引き、別名・略称で同じ記事を指す選択肢がある問題を除外 (verifyWithWikipedia)
         ///  1. Gemini + Google検索グラウンディング (無料枠が残っていれば)。「不確か」も除外
         ///  2. Wikipedia 検索の根拠文 + 生成モデルの判定 (キー不要)。根拠に反する「誤り」だけ除外
+        /// どちらの経路でも、誤答の中に「それも正解」(also_correct) があれば除外する。
         /// 検証側の正答案で自動修正はしない: 問題文の条件 (「日本の物理学者」等) を読み違えた誤修正が実測で出たため。
         /// 検証自体が失敗した場合は未検証のまま通す (ゲーム進行を止めない)。
         /// </summary>
@@ -639,22 +646,39 @@ namespace GemmaQuiz.AI
         {
             if (questionSet?.questions == null || questionSet.questions.Count == 0) return;
 
-            var items = new List<(int id, string question, string answer, string[] wrongs)>();
-            var itemQuestions = new List<QuizQuestion>();
+            var candidates = new List<(QuizQuestion q, string answer, string[] wrongs)>();
             foreach (var q in questionSet.questions)
             {
                 if (q == null || !TryGetAnswerAndWrongs(q, out var answer, out var wrongs)) continue;
-                items.Add((items.Count + 1, q.question, answer, wrongs));
-                itemQuestions.Add(q);
+                candidates.Add((q, answer, wrongs));
             }
-            if (items.Count == 0) return;
+            if (candidates.Count == 0) return;
+
+            // 選択肢 (正解+誤答) の記事をまとめて引き、同じ記事を指す選択肢 (アメリカ/米国 等) を持つ問題を落とす。
+            // 取れた記事は Wikipedia 検証の根拠にも使う。
+            Dictionary<string, WikipediaClient.Extract> pages = null;
+            if (verifyWithWikipedia)
+            {
+                pages = await FetchChoicePagesAsync(candidates, quiet);
+                if (pages != null)
+                    candidates.RemoveAll(c => DropIfSameArticle(c, pages, questionSet));
+                if (candidates.Count == 0) return;
+            }
+
+            var items = new List<(int id, string question, string answer, string[] wrongs)>(candidates.Count);
+            var itemQuestions = new List<QuizQuestion>(candidates.Count);
+            foreach (var c in candidates)
+            {
+                items.Add((items.Count + 1, c.q.question, c.answer, c.wrongs));
+                itemQuestions.Add(c.q);
+            }
 
             bool geminiReady = verifyWithSearch && verifier != null && Time.realtimeSinceStartup >= verifierPausedUntil;
             if (geminiReady && await VerifyWithGeminiAsync(items, itemQuestions, questionSet, label, quiet))
                 return;
 
             if (verifyWithWikipedia && judgeClient != null)
-                await VerifyWithWikipediaAsync(items, itemQuestions, questionSet, label, quiet);
+                await VerifyWithWikipediaAsync(items, itemQuestions, questionSet, label, quiet, pages);
         }
 
         /// <summary>
@@ -707,37 +731,54 @@ namespace GemmaQuiz.AI
         /// 問題ごとに Wikipedia を検索して根拠文を集め、生成モデルに判定させる (キー不要・無料枠の上限なし)。
         /// </summary>
         private async Task VerifyWithWikipediaAsync(List<(int id, string question, string answer, string[] wrongs)> items,
-            List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, string label, bool quiet)
+            List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, string label, bool quiet,
+            Dictionary<string, WikipediaClient.Extract> pages)
         {
             SetStatus($"正解を確認中 (Wikipedia, {items.Count}問)...", quiet);
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
             var evidence = new List<string>(items.Count);
+            var wrongNotes = new List<string>(items.Count);
             int withHits = 0;
             foreach (var item in items)
             {
-                string ev = "";
+                var lines = new List<string>();
+                var seenTitles = new HashSet<string>();
+                // 正解そのものの記事があれば最初の根拠にする
+                if (TryGetPage(pages, item.answer, out var answerPage) && seenTitles.Add(answerPage.title))
+                    lines.Add($"- {answerPage.title}: {answerPage.extract.Replace("\n", " ")}");
                 try
                 {
                     var hits = await WikipediaClient.SearchExtractsAsync(BuildEvidenceQuery(item.question, item.answer), evidencePerQuestion, EvidenceMaxChars);
-                    if (hits.Count > 0)
-                    {
-                        withHits++;
-                        ev = string.Join("\n", hits.ConvertAll(h => $"- {h.title}: {h.extract.Replace("\n", " ")}"));
-                    }
+                    foreach (var h in hits)
+                        if (seenTitles.Add(h.title)) lines.Add($"- {h.title}: {h.extract.Replace("\n", " ")}");
                 }
                 catch (Exception e)
                 {
                     Debug.LogWarning($"[QuizGenerator] Evidence search failed for 『{item.question}』: {e.Message}");
                 }
-                evidence.Add(ev);
+                if (lines.Count > 0) withHits++;
+                evidence.Add(string.Join("\n", lines));
+
+                // 誤答それぞれが何者か (別名・同一物を判定側が見落とさないように)
+                var notes = new List<string>(3);
+                if (pages != null && item.wrongs != null)
+                {
+                    foreach (var w in item.wrongs)
+                    {
+                        notes.Add(TryGetPage(pages, w, out var wrongPage)
+                            ? $"     「{w}」= {wrongPage.title}: {Truncate(wrongPage.extract.Replace("\n", " "), WrongNoteMaxChars)}"
+                            : $"     「{w}」= (記事なし)");
+                    }
+                }
+                wrongNotes.Add(string.Join("\n", notes));
             }
             double searchSec = sw.Elapsed.TotalSeconds;
 
             VerifyResponse parsed;
             try
             {
-                var json = await judgeClient.GenerateAsync(QuizPromptBuilder.BuildEvidenceVerification(items, evidence), VerifySchema);
+                var json = await judgeClient.GenerateAsync(QuizPromptBuilder.BuildEvidenceVerification(items, evidence, wrongNotes), VerifySchema);
                 parsed = ParseVerification(json);
             }
             catch (Exception e)
@@ -761,47 +802,135 @@ namespace GemmaQuiz.AI
         private static void ApplyVerdicts(VerifyResponse parsed, List<(int id, string question, string answer, string[] wrongs)> items,
             List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, bool dropUnsure, string summaryPrefix, string label)
         {
-            int ok = 0, dropped = 0, unsureKept = 0;
+            int ok = 0, dropped = 0, alsoCorrect = 0, unsureKept = 0;
             var toRemove = new HashSet<QuizQuestion>();
             foreach (var r in parsed.results)
             {
                 if (r == null || r.id < 1 || r.id > itemQuestions.Count) continue;
                 var q = itemQuestions[r.id - 1];
-                string givenAnswer = items[r.id - 1].answer;
+                var item = items[r.id - 1];
+                string givenAnswer = item.answer;
                 string verdict = (r.verdict ?? "").Trim().ToLowerInvariant();
 
                 // "wrong" なのに正答案が元の正解と同じ = 実質 ok (Gemini がこの形で返すことが実測で何度もあった)
                 if (verdict == "wrong" && SameAnswer(r.correct_answer, givenAnswer))
                     verdict = "ok";
 
+                if (verdict == "wrong" || (verdict != "ok" && dropUnsure))
+                {
+                    toRemove.Add(q);
+                    dropped++;
+                    string hint = string.IsNullOrWhiteSpace(r.correct_answer) ? "" : $" / 検証側の正答案『{r.correct_answer}』";
+                    Debug.LogWarning($"[QuizGenerator] 検証で除外 ({verdict}): 『{q.question}』 正解『{givenAnswer}』 {r.note}{hint}");
+                    continue;
+                }
+
+                // 正解は合っていても、誤答の中に「それも正解」が混じっていれば4択として成立しない
+                string extra = FindListedWrong(r.also_correct, item);
+                if (extra != null)
+                {
+                    toRemove.Add(q);
+                    alsoCorrect++;
+                    Debug.LogWarning($"[QuizGenerator] 検証で除外 (誤答『{extra}』も正解になり得る): 『{q.question}』 正解『{givenAnswer}』 {r.note}");
+                    continue;
+                }
+
                 if (verdict == "ok")
                 {
                     ok++;
                     continue;
                 }
-                if (verdict != "wrong" && !dropUnsure)
-                {
-                    unsureKept++;
-                    Debug.Log($"[QuizGenerator] 検証: 未確認のまま採用 ({verdict}): 『{q.question}』 {r.note}");
-                    continue;
-                }
-                toRemove.Add(q);
-                dropped++;
-                string hint = string.IsNullOrWhiteSpace(r.correct_answer) ? "" : $" / 検証側の正答案『{r.correct_answer}』";
-                Debug.LogWarning($"[QuizGenerator] 検証で除外 ({verdict}): 『{q.question}』 正解『{givenAnswer}』 {r.note}{hint}");
+                unsureKept++;
+                Debug.Log($"[QuizGenerator] 検証: 未確認のまま採用 ({verdict}): 『{q.question}』 {r.note}");
             }
 
             if (toRemove.Count > 0)
                 questionSet.questions.RemoveAll(toRemove.Contains);
 
-            Debug.Log($"[QuizGenerator][{label}] {summaryPrefix}: ok={ok}, dropped={dropped}, unsure-kept={unsureKept}, unlisted={items.Count - ok - dropped - unsureKept}");
+            Debug.Log($"[QuizGenerator][{label}] {summaryPrefix}: ok={ok}, dropped={dropped}, also-correct={alsoCorrect}, unsure-kept={unsureKept}, " +
+                      $"unlisted={items.Count - ok - dropped - alsoCorrect - unsureKept}");
+        }
 
-            static bool SameAnswer(string a, string b)
+        private const int WrongNoteMaxChars = 160;
+
+        /// <summary>
+        /// 全問の選択肢 (正解+誤答) の記事冒頭を Wikipedia から 20件ごと 1 リクエストでまとめて取得する。
+        /// キーは WikipediaClient.CleanTitle 済みの選択肢文字列。失敗したら null (検証自体は続行)。
+        /// </summary>
+        private async Task<Dictionary<string, WikipediaClient.Extract>> FetchChoicePagesAsync(
+            List<(QuizQuestion q, string answer, string[] wrongs)> candidates, bool quiet)
+        {
+            var titles = new List<string>(candidates.Count * 4);
+            foreach (var c in candidates)
             {
-                if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
-                return Norm(a) == Norm(b);
-                static string Norm(string s) => s.Trim().ToLowerInvariant().Replace(" ", "").Replace("　", "");
+                titles.Add(c.answer);
+                if (c.wrongs != null) titles.AddRange(c.wrongs);
             }
+            SetStatus($"選択肢を確認中 (Wikipedia, {candidates.Count}問)...", quiet);
+            try
+            {
+                return await WikipediaClient.FetchExtractMapAsync(titles, EvidenceMaxChars);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[QuizGenerator] Choice lookup on Wikipedia failed: {e.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 2つの選択肢が同じ Wikipedia 記事に解決される (別名・略称・リダイレクト: アメリカ/米国 等) 問題を questionSet から外す。外したら true。
+        /// </summary>
+        private static bool DropIfSameArticle((QuizQuestion q, string answer, string[] wrongs) c,
+            Dictionary<string, WikipediaClient.Extract> pages, QuizQuestionSet questionSet)
+        {
+            var choices = new List<string>(4) { c.answer };
+            if (c.wrongs != null) choices.AddRange(c.wrongs);
+
+            var firstChoiceByArticle = new Dictionary<string, string>();
+            foreach (var choice in choices)
+            {
+                if (!TryGetPage(pages, choice, out var page)) continue;
+                if (firstChoiceByArticle.TryGetValue(page.title, out var other))
+                {
+                    if (WikipediaClient.CleanTitle(other) == WikipediaClient.CleanTitle(choice)) continue; // 完全一致は形式チェック側で落ちる
+                    Debug.LogWarning($"[QuizGenerator] 検証で除外 (選択肢『{other}』と『{choice}』が同じ記事『{page.title}』を指す): 『{c.q.question}』");
+                    questionSet.questions.Remove(c.q);
+                    return true;
+                }
+                firstChoiceByArticle[page.title] = choice;
+            }
+            return false;
+        }
+
+        private static bool TryGetPage(Dictionary<string, WikipediaClient.Extract> pages, string choice, out WikipediaClient.Extract page)
+        {
+            page = null;
+            if (pages == null || string.IsNullOrEmpty(choice)) return false;
+            string key = WikipediaClient.CleanTitle(choice);
+            return key.Length > 0 && pages.TryGetValue(key, out page);
+        }
+
+        private static string Truncate(string s, int maxChars)
+            => s.Length <= maxChars ? s : s.Substring(0, maxChars) + "…";
+
+        private static bool SameAnswer(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+            return ChoiceKey(a) == ChoiceKey(b);
+        }
+
+        /// <summary>検証側が also_correct に挙げた中で、実際に誤答選択肢のどれかに当たるもの (正解自身は除く) を返す。</summary>
+        private static string FindListedWrong(string[] listed, (int id, string question, string answer, string[] wrongs) item)
+        {
+            if (listed == null || item.wrongs == null) return null;
+            foreach (var l in listed)
+            {
+                if (string.IsNullOrWhiteSpace(l) || SameAnswer(l, item.answer)) continue;
+                foreach (var w in item.wrongs)
+                    if (SameAnswer(l, w)) return w;
+            }
+            return null;
         }
 
         /// <summary>
@@ -914,7 +1043,7 @@ namespace GemmaQuiz.AI
 
         [Serializable] private class TitleList { public string[] titles; }
         [Serializable] private class VerifyResponse { public VerifyItem[] results; }
-        [Serializable] private class VerifyItem { public int id; public string verdict; public string correct_answer; public string note; }
+        [Serializable] private class VerifyItem { public int id; public string verdict; public string correct_answer; public string[] also_correct; public string note; }
 
         // 検証結果を JSON モードで整形し直すときのスキーマ (Gemini responseSchema)
         private const string VerifySchema =
@@ -922,6 +1051,7 @@ namespace GemmaQuiz.AI
             "\"id\":{\"type\":\"integer\"}," +
             "\"verdict\":{\"type\":\"string\",\"enum\":[\"ok\",\"wrong\",\"unsure\"]}," +
             "\"correct_answer\":{\"type\":\"string\"}," +
+            "\"also_correct\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}," +
             "\"note\":{\"type\":\"string\"}" +
             "},\"required\":[\"id\",\"verdict\"]}}},\"required\":[\"results\"]}";
 
@@ -1058,14 +1188,13 @@ namespace GemmaQuiz.AI
                 && (t.Contains("\"answer\"") || t.Contains("\"choices\""));
         }
 
-        private static void ValidateQuestions(QuizQuestionSet questionSet)
+        private static void ValidateQuestions(QuizQuestionSet questionSet, bool throwIfEmpty = true)
         {
             int removed = 0;
-            var seen = new HashSet<string>();
             for (int i = questionSet.questions.Count - 1; i >= 0; i--)
             {
                 var q = questionSet.questions[i];
-                string reason = GetRejectReason(q, seen);
+                string reason = GetRejectReason(q);
                 if (reason != null)
                 {
                     Debug.LogWarning($"[QuizGenerator] 問題{i + 1}を除外: {reason}");
@@ -1077,26 +1206,24 @@ namespace GemmaQuiz.AI
             if (removed > 0)
                 Debug.LogWarning($"[QuizGenerator] {removed}問を除外しました（残り{questionSet.questions.Count}問）");
 
-            if (questionSet.questions.Count == 0)
+            if (throwIfEmpty && questionSet.questions.Count == 0)
                 throw new Exception("有効な問題が0件です");
         }
 
         /// <summary>
         /// 問題が出題に耐えなければ理由を返す。問題なければ null。
         /// </summary>
-        private static string GetRejectReason(QuizQuestion q, HashSet<string> seen)
+        private static string GetRejectReason(QuizQuestion q)
         {
             if (string.IsNullOrWhiteSpace(q.question)) return "問題文が空";
             if (QuizPromptBuilder.IsExampleQuestion(q.question)) return "プロンプトの例題をそのまま流用";
             if (q.choices == null || q.choices.Length != 4) return $"選択肢が4つではない({q.choices?.Length ?? 0})";
             if (q.correct_index < 0 || q.correct_index > 3) return $"correct_index({q.correct_index})が範囲外";
 
-            seen.Clear();
             foreach (var c in q.choices)
-            {
                 if (string.IsNullOrWhiteSpace(c)) return "空の選択肢がある";
-                if (!seen.Add(c.Trim().ToLowerInvariant())) return $"選択肢が重複している『{c}』";
-            }
+            string duplicate = FindDuplicateChoice(q.choices);
+            if (duplicate != null) return duplicate;
 
             // 問題文に正解テキストが含まれている (自己言及問題)
             var correctText = q.choices[q.correct_index];
@@ -1104,6 +1231,82 @@ namespace GemmaQuiz.AI
                 return $"問題文に正解『{correctText}』が含まれている";
 
             return null;
+        }
+
+        // ===== 選択肢の同一性チェック =====
+
+        /// <summary>
+        /// 4つの選択肢に「同じもの」が混じっていれば理由を返す (無ければ null)。
+        /// 表記ゆれ (全角/半角・ひらがな/カタカナ・ヴ/バ行・空白や中点の有無・末尾の長音) を吸収したうえで、
+        /// 行政区分や国名の接尾辞違い (東京/東京都)、複合名の一部 (ゴッホ/フィンセント・ファン・ゴッホ) も同一とみなす。
+        /// </summary>
+        private static string FindDuplicateChoice(string[] choices)
+        {
+            for (int i = 0; i < choices.Length; i++)
+                for (int j = i + 1; j < choices.Length; j++)
+                {
+                    string why = SameEntityReason(choices[i], choices[j]);
+                    if (why != null) return $"選択肢『{choices[i]}』と『{choices[j]}』が{why}";
+                }
+            return null;
+        }
+
+        private static readonly string[] EntitySuffixes =
+            { "都", "道", "府", "県", "市", "区", "町", "村", "郡", "州", "国", "合衆国", "王国", "共和国", "連邦", "帝国", "公国" };
+        private static readonly char[] SegmentSeparators = { '・', '･', '·', '=', ' ', '-', '‐', '–', '—', '―' };
+        private const string SeparatorChars = " ・･·=-‐–—―'’\".,、。「」『』";
+
+        private static string SameEntityReason(string a, string b)
+        {
+            string ka = ChoiceKey(a), kb = ChoiceKey(b);
+            if (ka.Length == 0 || kb.Length == 0) return null;
+            if (ka == kb) return "重複している";
+
+            bool aIsShort = ka.Length <= kb.Length;
+            string shortKey = aIsShort ? ka : kb;
+            string longKey = aIsShort ? kb : ka;
+            if (shortKey.Length < 2) return null;
+
+            // 接尾辞違い: 東京/東京都, アメリカ/アメリカ合衆国
+            foreach (var suffix in EntitySuffixes)
+                if (longKey == shortKey + suffix) return "同じものの表記違い";
+
+            // 複合名の一部: ゴッホ/フィンセント・ファン・ゴッホ, ビートルズ/ザ・ビートルズ
+            var segments = NormalizeChoiceText(aIsShort ? b : a).Split(SegmentSeparators, StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length >= 2)
+                foreach (var segment in segments)
+                    if (StripSeparators(segment) == shortKey) return "同じものの表記違い";
+
+            return null;
+        }
+
+        /// <summary>比較用キー: NormalizeChoiceText + 区切り記号の除去 + 末尾の長音除去 (コンピューター/コンピュータ)。</summary>
+        private static string ChoiceKey(string s)
+            => StripSeparators(NormalizeChoiceText(s)).TrimEnd('ー');
+
+        /// <summary>全角英数記号→半角、全角空白→半角、ひらがな→カタカナ、ヴ→バ行、小文字化 (区切り記号は残す)。</summary>
+        private static string NormalizeChoiceText(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            foreach (char raw in s.Trim())
+            {
+                char c = raw;
+                if (c >= '！' && c <= '～') c = (char)(c - 0xFEE0);      // 全角英数記号 → 半角
+                else if (c == '　') c = ' ';                                  // 全角空白
+                else if (c >= 'ぁ' && c <= 'ゖ') c = (char)(c + 0x60);   // ひらがな → カタカナ
+                sb.Append(c);
+            }
+            return sb.ToString().ToLowerInvariant()
+                .Replace("ヴァ", "バ").Replace("ヴィ", "ビ").Replace("ヴェ", "ベ").Replace("ヴォ", "ボ").Replace("ヴ", "ブ");
+        }
+
+        private static string StripSeparators(string s)
+        {
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+                if (SeparatorChars.IndexOf(c) < 0) sb.Append(c);
+            return sb.ToString();
         }
 
         /// <summary>
