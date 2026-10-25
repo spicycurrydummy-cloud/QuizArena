@@ -96,9 +96,14 @@ namespace GemmaQuiz.AI
         [Tooltip("題材タイトルの列挙に使う reasoning_effort (Mercury)。instant が最速")]
         [SerializeField] private string materialReasoningEffort = "instant";
 
-        [Header("Answer Verification (Gemini + Google検索, 無料枠 500回/日)")]
-        [Tooltip("生成した問題の正解を Gemini の Google検索グラウンディングで裏取りし、誤り/不確かな問題を除外する (Gemini キーが必要)")]
+        [Header("Answer Verification (無料枠のみで運用)")]
+        [Tooltip("生成した問題の正解を Gemini の Google検索グラウンディングで裏取りする (Gemini キーが必要)。" +
+                 "gemini-2.5-flash-lite の無料枠はこのキーで 1日20リクエストなので、上限に当たったら自動で Wikipedia 検証に切り替わる")]
         [SerializeField] private bool verifyWithSearch = true;
+        [Tooltip("Gemini が使えないとき、Wikipedia 検索の根拠文を生成モデルに渡して判定させる (キー不要・上限なし)。根拠に反する問題だけ除外する")]
+        [SerializeField] private bool verifyWithWikipedia = true;
+        [Tooltip("1問あたりに集める根拠記事数 (Wikipedia へ問題数ぶんのリクエスト)")]
+        [Range(1, 5)] [SerializeField] private int evidencePerQuestion = 3;
 
         private IQuizAIClient client;
         private string clientLabel = "primary";
@@ -108,10 +113,13 @@ namespace GemmaQuiz.AI
 
         // 題材タイトル列挙用の軽量クライアント (温度高め・短い出力)
         private IQuizAIClient materialClient;
+        // Wikipedia 根拠文による判定用 (温度低め)
+        private IQuizAIClient judgeClient;
         // 正解の裏取り用 (Google検索グラウンディングは Gemini 専用)
         private GeminiClient verifier;
         private float verifierPausedUntil = -1f;
         private const float VerifierPauseSec = 600f;
+        private const int EvidenceMaxChars = 500;
 
         // 同じ記事を題材に使い回さないための履歴 (直近 UsedTitleMemory 件)
         private readonly Queue<string> usedTitles = new();
@@ -182,6 +190,8 @@ namespace GemmaQuiz.AI
                         "Inception", inceptionReasoningEffort, supportsJsonSchema: false);
                     materialClient = new OpenAIChatClient(inceptionKey, inceptionUrl, model, 0.9f, 1024,
                         "Inception", materialReasoningEffort, supportsJsonSchema: false);
+                    judgeClient = new OpenAIChatClient(inceptionKey, inceptionUrl, model, 0.1f, InceptionMaxTokens("low"),
+                        "Inception", "low", supportsJsonSchema: false);
                     clientLabel = $"Inception({model})";
                     Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort})");
                     break;
@@ -190,12 +200,14 @@ namespace GemmaQuiz.AI
                         Debug.LogError("[QuizGenerator] Gemini API key not found. Put it in UserSettings/Config.json (editor) or Resources/Config.json (build).");
                     client = new GeminiClient(geminiKey, geminiModel, temperature);
                     materialClient = new GeminiClient(geminiKey, geminiModel, 0.9f);
+                    judgeClient = new GeminiClient(geminiKey, geminiModel, 0.1f);
                     clientLabel = $"Gemini({geminiModel})";
                     Debug.Log($"[QuizGenerator] Using Gemini (model: {geminiModel})");
                     break;
                 default:
                     client = new OllamaClient(ollamaUrl, ollamaModel, temperature);
                     materialClient = new OllamaClient(ollamaUrl, ollamaModel, 0.9f);
+                    judgeClient = new OllamaClient(ollamaUrl, ollamaModel, 0.1f);
                     clientLabel = $"Ollama({ollamaModel})";
                     Debug.Log($"[QuizGenerator] Using Ollama (model: {ollamaModel})");
                     break;
@@ -229,9 +241,10 @@ namespace GemmaQuiz.AI
             // 正解の裏取り (Google検索グラウンディング) は Gemini 専用機能なので Gemini キーがあるときだけ有効
             verifier = string.IsNullOrEmpty(geminiKey) ? null : new GeminiClient(geminiKey, geminiModel, 0.1f);
             if (verifyWithSearch && verifier == null)
-                Debug.LogWarning("[QuizGenerator] verifyWithSearch is on but no Gemini API key is configured: answers will not be verified.");
+                Debug.LogWarning("[QuizGenerator] verifyWithSearch is on but no Gemini API key is configured: falling back to Wikipedia verification.");
             Debug.Log($"[QuizGenerator] Wikipedia material: {(useWikipediaMaterial ? "on" : "off")}, " +
-                      $"search verification: {(verifyWithSearch && verifier != null ? geminiModel : "off")}");
+                      $"search verification: {(verifyWithSearch && verifier != null ? geminiModel : "off")}, " +
+                      $"wikipedia verification: {(verifyWithWikipedia ? "on" : "off")}");
         }
 
         private static string FirstNonEmpty(string a, string b) => string.IsNullOrEmpty(a) ? b : a;
@@ -421,8 +434,8 @@ namespace GemmaQuiz.AI
                     double genSec = sw.Elapsed.TotalSeconds;
                     var questionSet = ParseResponse(responseJson);
 
-                    // Google検索で正解を裏取り (誤り/不確かな問題はここで落とす)
-                    await VerifyWithSearchAsync(questionSet, label, quiet);
+                    // 正解を裏取り (誤り/不確かな問題はここで落とす)
+                    await VerifyAsync(questionSet, label, quiet);
 
                     // 同じ問題文は重複として捨てつつ蓄積
                     int added = 0;
@@ -616,15 +629,15 @@ namespace GemmaQuiz.AI
         // ===== 正解の裏取り (Gemini + Google検索) =====
 
         /// <summary>
-        /// 生成直後の問題 (answer/wrongs 形式) を Google検索グラウンディング付きの Gemini に検証させ、
-        /// 正解が「誤り」「不確か」と判定された問題を除外する (足りない分は次の試行で補充される)。
+        /// 生成直後の問題 (answer/wrongs 形式) の正解を裏取りし、誤りと判定された問題を除外する (足りない分は次の試行で補充される)。
+        ///  1. Gemini + Google検索グラウンディング (無料枠が残っていれば)。「不確か」も除外
+        ///  2. Wikipedia 検索の根拠文 + 生成モデルの判定 (キー不要)。根拠に反する「誤り」だけ除外
         /// 検証側の正答案で自動修正はしない: 問題文の条件 (「日本の物理学者」等) を読み違えた誤修正が実測で出たため。
         /// 検証自体が失敗した場合は未検証のまま通す (ゲーム進行を止めない)。
         /// </summary>
-        private async Task VerifyWithSearchAsync(QuizQuestionSet questionSet, string label, bool quiet)
+        private async Task VerifyAsync(QuizQuestionSet questionSet, string label, bool quiet)
         {
-            if (!verifyWithSearch || verifier == null || questionSet?.questions == null || questionSet.questions.Count == 0) return;
-            if (Time.realtimeSinceStartup < verifierPausedUntil) return;
+            if (questionSet?.questions == null || questionSet.questions.Count == 0) return;
 
             var items = new List<(int id, string question, string answer, string[] wrongs)>();
             var itemQuestions = new List<QuizQuestion>();
@@ -636,6 +649,20 @@ namespace GemmaQuiz.AI
             }
             if (items.Count == 0) return;
 
+            bool geminiReady = verifyWithSearch && verifier != null && Time.realtimeSinceStartup >= verifierPausedUntil;
+            if (geminiReady && await VerifyWithGeminiAsync(items, itemQuestions, questionSet, label, quiet))
+                return;
+
+            if (verifyWithWikipedia && judgeClient != null)
+                await VerifyWithWikipediaAsync(items, itemQuestions, questionSet, label, quiet);
+        }
+
+        /// <summary>
+        /// Gemini の Google検索グラウンディングで検証する。判定を適用できたら true、スキップ/失敗なら false (呼び出し側が次の手段へ)。
+        /// </summary>
+        private async Task<bool> VerifyWithGeminiAsync(List<(int id, string question, string answer, string[] wrongs)> items,
+            List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, string label, bool quiet)
+        {
             SetStatus($"正解を検索で確認中 ({items.Count}問)...", quiet);
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -655,23 +682,86 @@ namespace GemmaQuiz.AI
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[QuizGenerator][{label}] Search verification skipped: {e.Message}");
+                Debug.LogWarning($"[QuizGenerator][{label}] Gemini verification skipped: {e.Message}");
                 if (IsNonRetryableError(e.Message))
                 {
                     verifierPausedUntil = Time.realtimeSinceStartup + VerifierPauseSec;
-                    Debug.LogWarning($"[QuizGenerator] Verifier paused for {VerifierPauseSec / 60:0} min (quota / rate limit).");
+                    Debug.LogWarning($"[QuizGenerator] Gemini verifier paused for {VerifierPauseSec / 60:0} min (quota / rate limit); using Wikipedia verification meanwhile.");
                 }
-                return;
+                return false;
             }
 
             if (parsed?.results == null)
             {
                 int head = Mathf.Min(300, text?.Length ?? 0);
-                Debug.LogWarning($"[QuizGenerator][{label}] Search verification returned no parsable results; keeping questions unverified. Text head: {text?.Substring(0, head)}");
+                Debug.LogWarning($"[QuizGenerator][{label}] Gemini verification returned no parsable results. Text head: {text?.Substring(0, head)}");
+                return false;
+            }
+
+            ApplyVerdicts(parsed, items, itemQuestions, questionSet, dropUnsure: true,
+                $"Gemini search verification in {sw.Elapsed.TotalSeconds:0.0}s", label);
+            return true;
+        }
+
+        /// <summary>
+        /// 問題ごとに Wikipedia を検索して根拠文を集め、生成モデルに判定させる (キー不要・無料枠の上限なし)。
+        /// </summary>
+        private async Task VerifyWithWikipediaAsync(List<(int id, string question, string answer, string[] wrongs)> items,
+            List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, string label, bool quiet)
+        {
+            SetStatus($"正解を確認中 (Wikipedia, {items.Count}問)...", quiet);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            var evidence = new List<string>(items.Count);
+            int withHits = 0;
+            foreach (var item in items)
+            {
+                string ev = "";
+                try
+                {
+                    var hits = await WikipediaClient.SearchExtractsAsync(BuildEvidenceQuery(item.question, item.answer), evidencePerQuestion, EvidenceMaxChars);
+                    if (hits.Count > 0)
+                    {
+                        withHits++;
+                        ev = string.Join("\n", hits.ConvertAll(h => $"- {h.title}: {h.extract.Replace("\n", " ")}"));
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[QuizGenerator] Evidence search failed for 『{item.question}』: {e.Message}");
+                }
+                evidence.Add(ev);
+            }
+            double searchSec = sw.Elapsed.TotalSeconds;
+
+            VerifyResponse parsed;
+            try
+            {
+                var json = await judgeClient.GenerateAsync(QuizPromptBuilder.BuildEvidenceVerification(items, evidence), VerifySchema);
+                parsed = ParseVerification(json);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[QuizGenerator][{label}] Wikipedia verification skipped: {e.Message}");
+                return;
+            }
+            if (parsed?.results == null)
+            {
+                Debug.LogWarning($"[QuizGenerator][{label}] Wikipedia verification returned no parsable results; keeping questions unverified.");
                 return;
             }
 
-            int ok = 0, dropped = 0;
+            ApplyVerdicts(parsed, items, itemQuestions, questionSet, dropUnsure: false,
+                $"Wikipedia verification in {sw.Elapsed.TotalSeconds:0.0}s (search {searchSec:0.0}s, evidence for {withHits}/{items.Count})", label);
+        }
+
+        /// <summary>
+        /// 判定結果を問題セットに適用する。ok 以外を除外 (dropUnsure=false なら unsure は残す)。
+        /// </summary>
+        private static void ApplyVerdicts(VerifyResponse parsed, List<(int id, string question, string answer, string[] wrongs)> items,
+            List<QuizQuestion> itemQuestions, QuizQuestionSet questionSet, bool dropUnsure, string summaryPrefix, string label)
+        {
+            int ok = 0, dropped = 0, unsureKept = 0;
             var toRemove = new HashSet<QuizQuestion>();
             foreach (var r in parsed.results)
             {
@@ -689,6 +779,12 @@ namespace GemmaQuiz.AI
                     ok++;
                     continue;
                 }
+                if (verdict != "wrong" && !dropUnsure)
+                {
+                    unsureKept++;
+                    Debug.Log($"[QuizGenerator] 検証: 未確認のまま採用 ({verdict}): 『{q.question}』 {r.note}");
+                    continue;
+                }
                 toRemove.Add(q);
                 dropped++;
                 string hint = string.IsNullOrWhiteSpace(r.correct_answer) ? "" : $" / 検証側の正答案『{r.correct_answer}』";
@@ -698,7 +794,7 @@ namespace GemmaQuiz.AI
             if (toRemove.Count > 0)
                 questionSet.questions.RemoveAll(toRemove.Contains);
 
-            Debug.Log($"[QuizGenerator][{label}] Search verification in {sw.Elapsed.TotalSeconds:0.0}s: ok={ok}, dropped={dropped}, unlisted={items.Count - ok - dropped}");
+            Debug.Log($"[QuizGenerator][{label}] {summaryPrefix}: ok={ok}, dropped={dropped}, unsure-kept={unsureKept}, unlisted={items.Count - ok - dropped - unsureKept}");
 
             static bool SameAnswer(string a, string b)
             {
@@ -706,6 +802,17 @@ namespace GemmaQuiz.AI
                 return Norm(a) == Norm(b);
                 static string Norm(string s) => s.Trim().ToLowerInvariant().Replace(" ", "").Replace("　", "");
             }
+        }
+
+        /// <summary>
+        /// 根拠検索用のクエリ: 正解 + 問題文 (記号を除き、長すぎれば切る)。
+        /// </summary>
+        private static string BuildEvidenceQuery(string question, string answer)
+        {
+            string q = Regex.Replace(question ?? "", @"[？?！!。、,.「」『』（）()]", " ");
+            q = Regex.Replace(q, @"\s+", " ").Trim();
+            if (q.Length > 80) q = q.Substring(0, 80);
+            return $"{answer} {q}".Trim();
         }
 
         private static VerifyResponse ParseVerification(string text)

@@ -3879,6 +3879,8 @@ MonoBehaviour:
   materialMaxChars: 400
   materialReasoningEffort: instant
   verifyWithSearch: 1
+  verifyWithWikipedia: 1
+  evidencePerQuestion: 3
 --- !u!1 &1494874648
 GameObject:
   m_ObjectHideFlags: 0

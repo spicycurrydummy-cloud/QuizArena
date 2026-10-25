@@ -263,6 +263,49 @@ Output shape:
 {{""results"":[{{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""note"":""短い理由""}}]}}";
         }
 
+        /// <summary>
+        /// Wikipedia 検索で集めた根拠文をもとに生成モデル自身に正解を判定させるプロンプト
+        /// (Gemini の無料枠が無いときの検証経路。根拠が無いだけでは落とさない)。evidence[i] は items[i] に対応。
+        /// </summary>
+        public static string BuildEvidenceVerification(IList<(int id, string question, string answer, string[] wrongs)> items, IList<string> evidence)
+        {
+            var sb = new StringBuilder(4096);
+            sb.Append(@"You are the fact-checker for a Japanese four-choice trivia quiz used in a casual party game. For each item you get the question, the intended answer, the wrong choices, and evidence excerpts retrieved from Japanese Wikipedia.
+
+Give exactly one verdict per item:
+- ""wrong"": the evidence or well-established knowledge clearly contradicts the intended answer, or one of the wrong choices is actually the correct answer. Put that choice in ""correct_answer"" when it is one of the listed choices, otherwise leave it empty
+- ""ok"": the evidence supports the intended answer, or nothing contradicts it and the answer is consistent with well-established knowledge
+- ""unsure"": the question itself is ambiguous, has more than one valid answer, or depends on a fact that changes over time
+
+Rules:
+- Judge against ALL conditions stated in the question (nationality, era, category, ""first"", etc.)
+- Only answer ""wrong"" when you are confident; missing evidence alone is never a reason for ""wrong""
+- Never use ""wrong"" when the intended answer itself is correct
+
+Items:
+");
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                sb.Append(item.id).Append(". Q: ").Append(Clean(item.question)).Append('\n');
+                sb.Append("   answer: ").Append(Clean(item.answer)).Append('\n');
+                sb.Append("   wrong choices: ");
+                if (item.wrongs != null)
+                {
+                    foreach (var w in item.wrongs)
+                        sb.Append('「').Append(Clean(w)).Append('」');
+                }
+                sb.Append('\n');
+                string ev = evidence != null && i < evidence.Count ? evidence[i] : null;
+                sb.Append("   evidence: ").Append(string.IsNullOrWhiteSpace(ev) ? "(none found)" : ev.Trim()).Append("\n\n");
+            }
+
+            sb.Append(@"Output exactly ONE JSON object and nothing else:
+{""results"":[{""id"":1,""verdict"":""ok"",""correct_answer"":"""",""note"":""短い理由 (日本語)""}]}
+Include one result for every item, in order.");
+            return sb.ToString();
+        }
+
         private static string Clean(string s)
             => string.IsNullOrEmpty(s) ? "" : s.Replace("\r", " ").Replace("\n", " ").Trim();
 
