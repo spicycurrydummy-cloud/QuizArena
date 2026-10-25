@@ -32,8 +32,8 @@ jobs:
 
       # AI設定 (APIキー一式) を Resources/Config.json に書き出し。
       # GitHub Secret AI_CONFIG_JSON には以下のJSONをそのまま登録する (不要なキーは省略可):
-      #   {"inception_api_key":"sk_...","gemini_api_key":"AIza...","cerebras_api_key":"csk-...","groq_api_key":"gsk_..."}
-      # inception_api_key は Mercury 3 用のキー。モデル名はコード側 (QuizGenerator.inceptionModel) で指定する。
+      #   {"inception_api_key":"sk_...","inception_api_keys":["sk_予備..."],"gemini_api_key":"AIza...","cerebras_api_key":"csk-...","groq_api_key":"gsk_..."}
+      # inception_api_key は Mercury 3 用のキー。inception_api_keys に予備キーを並べると枠切れ/認証エラー時に順に切り替わる。モデル名はコード側 (QuizGenerator.inceptionModel) で指定する。
       - name: Inject AI config
         run: |
           mkdir -p Assets/Resources

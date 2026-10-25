@@ -172,7 +172,7 @@ namespace GemmaQuiz.AI
         private void RebuildClient()
         {
             var config = AIConfig.Load();
-            string inceptionKey = FirstNonEmpty(inceptionApiKey, config.inception_api_key);
+            var inceptionKeys = ApiKeyRing.Of(inceptionApiKey, config.InceptionKeys);
             string geminiKey = FirstNonEmpty(geminiApiKey, config.gemini_api_key);
             string cerebrasKey = FirstNonEmpty(cerebrasApiKey, config.cerebras_api_key);
             string groqKey = FirstNonEmpty(groqApiKey, config.groq_api_key);
@@ -180,20 +180,20 @@ namespace GemmaQuiz.AI
             switch (aiProvider)
             {
                 case AIProvider.Inception:
-                    if (string.IsNullOrEmpty(inceptionKey))
+                    if (inceptionKeys.IsEmpty)
                         Debug.LogError("[QuizGenerator] Inception API key not found. Put it in UserSettings/Config.json (editor) or Resources/Config.json (build).");
                     var model = string.IsNullOrWhiteSpace(inceptionModel) ? DefaultInceptionModel : inceptionModel.Trim();
                     // reasoning トークンも max_tokens に含まれる (実測: low で 2.4k〜7.2k、medium は 8k 超) ので、切れて壊れた出力にならないよう effort ごとに大きめに取る
                     int maxTokens = InceptionMaxTokens(inceptionReasoningEffort);
                     // Mercury 3 は json_schema(strict) だと推論が 8k トークンまで肥大化して壊れた配列を返す (実測 2/3 失敗) ので json_object を使う
-                    client = new OpenAIChatClient(inceptionKey, inceptionUrl, model, temperature, maxTokens,
+                    client = new OpenAIChatClient(inceptionKeys, inceptionUrl, model, temperature, maxTokens,
                         "Inception", inceptionReasoningEffort, supportsJsonSchema: false);
-                    materialClient = new OpenAIChatClient(inceptionKey, inceptionUrl, model, 0.9f, 1024,
+                    materialClient = new OpenAIChatClient(inceptionKeys, inceptionUrl, model, 0.9f, 1024,
                         "Inception", materialReasoningEffort, supportsJsonSchema: false);
-                    judgeClient = new OpenAIChatClient(inceptionKey, inceptionUrl, model, 0.1f, InceptionMaxTokens("low"),
+                    judgeClient = new OpenAIChatClient(inceptionKeys, inceptionUrl, model, 0.1f, InceptionMaxTokens("low"),
                         "Inception", "low", supportsJsonSchema: false);
                     clientLabel = $"Inception({model})";
-                    Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort})");
+                    Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort}, keys: {inceptionKeys.Count})");
                     break;
                 case AIProvider.Gemini:
                     if (string.IsNullOrEmpty(geminiKey))
