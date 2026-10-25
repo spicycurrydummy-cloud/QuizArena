@@ -8,7 +8,11 @@ namespace GemmaQuiz.AI
 {
     /// <summary>
     /// Google Gemini (Generative Language API) クライアント。
-    /// Inception/Mercury が失敗した際のフォールバックとして使用する。
+    ///  - GenerateAsync: JSONモードで問題生成 (Inception/Mercury 失敗時のフォールバック、または主プロバイダー)
+    ///  - GenerateGroundedAsync: Google検索グラウンディング付き生成。正解の裏取りに使う。
+    ///    2.5 Flash / Flash-Lite は無料枠で 1日500リクエストまで (両モデル合算)。
+    ///    グラウンディングと responseMimeType=application/json は併用できない (HTTP 400) ので、
+    ///    呼び出し側がプロンプトでJSONを要求して本文から抜き出す。
     /// </summary>
     public class GeminiClient : IQuizAIClient
     {
@@ -31,8 +35,6 @@ namespace GemmaQuiz.AI
 
         public async Task<string> GenerateAsync(string prompt, string jsonSchema = null)
         {
-            var url = $"{baseUrl}/models/{model}:generateContent?key={UnityWebRequest.EscapeURL(apiKey)}";
-
             var sb = new StringBuilder(prompt.Length + 512);
             sb.Append("{\"contents\":[{\"parts\":[{\"text\":\"").Append(AIHttp.EscapeJson(prompt)).Append("\"}]}],");
             sb.Append("\"generationConfig\":{");
@@ -43,27 +45,68 @@ namespace GemmaQuiz.AI
                 sb.Append(",\"responseSchema\":").Append(jsonSchema);
             sb.Append("}}");
 
-            Debug.Log($"[GeminiClient] POST {baseUrl}/models/{model}:generateContent (prompt length: {prompt.Length})");
+            Debug.Log($"[GeminiClient] POST {model}:generateContent (prompt length: {prompt.Length})");
 
-            var responseJson = await AIHttp.PostJsonAsync(url, sb.ToString(), null, "Gemini");
+            var responseJson = await AIHttp.PostJsonAsync(GenerateUrl(), sb.ToString(), null, "Gemini");
+            return ExtractText(responseJson, "Gemini");
+        }
 
-            var response = JsonUtility.FromJson<GenerateContentResponse>(responseJson);
-            if (response?.candidates == null || response.candidates.Length == 0)
-                throw new Exception("Gemini API: candidates が空です");
+        /// <summary>
+        /// Google検索でグラウンディングした回答を返す (JSONモード不可なので生テキスト)。
+        /// </summary>
+        public async Task<string> GenerateGroundedAsync(string prompt, int maxOutputTokens = 4096)
+        {
+            var sb = new StringBuilder(prompt.Length + 256);
+            sb.Append("{\"contents\":[{\"parts\":[{\"text\":\"").Append(AIHttp.EscapeJson(prompt)).Append("\"}]}],");
+            sb.Append("\"tools\":[{\"google_search\":{}}],");
+            sb.Append("\"generationConfig\":{");
+            sb.Append("\"temperature\":").Append(AIHttp.FormatFloat(temperature)).Append(',');
+            sb.Append("\"maxOutputTokens\":").Append(maxOutputTokens);
+            sb.Append("}}");
 
-            var candidate = response.candidates[0];
-            if (candidate.content?.parts == null || candidate.content.parts.Length == 0)
-                throw new Exception("Gemini API: content.parts が空です");
+            Debug.Log($"[GeminiClient] POST {model}:generateContent + google_search (prompt length: {prompt.Length})");
 
-            return candidate.content.parts[0].text;
+            var responseJson = await AIHttp.PostJsonAsync(GenerateUrl(), sb.ToString(), null, "Gemini(grounded)");
+            return ExtractText(responseJson, "Gemini(grounded)");
         }
 
         public Task<bool> IsAvailableAsync()
             => AIHttp.GetOkAsync($"{baseUrl}/models?key={UnityWebRequest.EscapeURL(apiKey)}");
 
-        [Serializable] private class GenerateContentResponse { public Candidate[] candidates; }
-        [Serializable] private class Candidate { public Content content; }
+        private string GenerateUrl()
+            => $"{baseUrl}/models/{model}:generateContent?key={UnityWebRequest.EscapeURL(apiKey)}";
+
+        /// <summary>
+        /// candidates[0] の全 text パートを連結して返す。空ならブロック理由/終了理由を添えて例外。
+        /// </summary>
+        private static string ExtractText(string responseJson, string label)
+        {
+            var response = JsonUtility.FromJson<GenerateContentResponse>(responseJson);
+            if (response?.candidates == null || response.candidates.Length == 0)
+                throw new Exception($"{label} API: candidates が空です (blockReason={response?.promptFeedback?.blockReason ?? "-"})");
+
+            var candidate = response.candidates[0];
+            var sb = new StringBuilder();
+            if (candidate.content?.parts != null)
+            {
+                foreach (var part in candidate.content.parts)
+                    if (!string.IsNullOrEmpty(part?.text)) sb.Append(part.text);
+            }
+            if (sb.Length == 0)
+                throw new Exception($"{label} API: テキストが空です (finishReason={candidate.finishReason ?? "?"})");
+
+            int queries = candidate.groundingMetadata?.webSearchQueries?.Length ?? 0;
+            if (queries > 0)
+                Debug.Log($"[GeminiClient] Google検索 {queries} 件を参照: {string.Join(" / ", candidate.groundingMetadata.webSearchQueries)}");
+
+            return sb.ToString();
+        }
+
+        [Serializable] private class GenerateContentResponse { public Candidate[] candidates; public PromptFeedback promptFeedback; }
+        [Serializable] private class PromptFeedback { public string blockReason; }
+        [Serializable] private class Candidate { public Content content; public string finishReason; public GroundingMetadata groundingMetadata; }
         [Serializable] private class Content { public Part[] parts; }
         [Serializable] private class Part { public string text; }
+        [Serializable] private class GroundingMetadata { public string[] webSearchQueries; }
     }
 }

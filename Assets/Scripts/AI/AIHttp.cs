@@ -103,6 +103,43 @@ namespace GemmaQuiz.AI
             }
         }
 
+        /// <summary>
+        /// GETしてレスポンス本文を返す。HTTPエラーは PostJsonAsync と同じ形式の例外にする。
+        /// headers は (名前, 値) のタプル。WebGL ではブラウザが許可するヘッダのみ有効。
+        /// </summary>
+        public static async Task<string> GetJsonAsync(string url, string label, int timeoutSec = DefaultTimeoutSec,
+            params (string name, string value)[] headers)
+        {
+            var request = UnityWebRequest.Get(url);
+            try
+            {
+                if (headers != null)
+                {
+                    foreach (var (name, value) in headers)
+                    {
+                        if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                            request.SetRequestHeader(name, value);
+                    }
+                }
+                request.timeout = timeoutSec;
+                await SendAsync(request);
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    var body = request.downloadHandler?.text;
+                    if (string.IsNullOrEmpty(body)) body = "no body";
+                    else if (body.Length > 300) body = body.Substring(0, 300) + "...";
+                    throw new Exception($"{label} API error: {request.error} (HTTP {request.responseCode}, Response: {body})");
+                }
+
+                return request.downloadHandler.text;
+            }
+            finally
+            {
+                request.Dispose();
+            }
+        }
+
         private static async Task SendAsync(UnityWebRequest request)
         {
             var op = request.SendWebRequest();

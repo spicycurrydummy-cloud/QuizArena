@@ -3860,13 +3860,13 @@ MonoBehaviour:
   ollamaModel: gemma4:e4b
   inceptionUrl: https://api.inceptionlabs.ai/v1
   inceptionModel: mercury-3
-  inceptionReasoningEffort: medium
+  inceptionReasoningEffort: low
   inceptionApiKey: 
   cerebrasUrl: https://api.cerebras.ai/v1
-  cerebrasModel: llama3.1-8b
+  cerebrasModel: gpt-oss-120b
   cerebrasApiKey: 
   groqUrl: https://api.groq.com/openai/v1
-  groqModel: llama-3.3-70b-versatile
+  groqModel: openai/gpt-oss-120b
   groqApiKey: 
   geminiModel: gemini-2.5-flash-lite
   geminiApiKey: 
@@ -3874,7 +3874,11 @@ MonoBehaviour:
   questionsPerGenre: 5
   maxRetries: 4
   fallbackRetries: 2
-  enableValidationPass: 0
+  useWikipediaMaterial: 1
+  materialTopicCount: 8
+  materialMaxChars: 400
+  materialReasoningEffort: instant
+  verifyWithSearch: 1
 --- !u!1 &1494874648
 GameObject:
   m_ObjectHideFlags: 0

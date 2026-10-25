@@ -34,6 +34,7 @@ namespace GemmaQuiz.Quiz
         private float loadingStartTime;
         private const float ExpectedLoadSeconds = 12f;
         private float loadingRealProgress;
+        private string hostGenerationStatus = "";   // ホストのみ: 題材収集/生成/検証のどこにいるか
 
         private System.Collections.IEnumerator Start()
         {
@@ -139,6 +140,8 @@ namespace GemmaQuiz.Quiz
             string owner = qm.CurrentRoundOwnerName.ToString();
             if (!string.IsNullOrEmpty(owner))
                 sb.Append($"\n<size=60%>({owner} の選択)</size>");
+            if (!string.IsNullOrEmpty(hostGenerationStatus))
+                sb.Append($"\n<size=55%>{hostGenerationStatus}</size>");
             loadingText.text = sb.ToString();
         }
 
@@ -244,7 +247,9 @@ namespace GemmaQuiz.Quiz
                 return;
             }
 
+            hostGenerationStatus = "";
             generator.OnGenerationProgress += HandleProgress;
+            generator.OnStatusChanged += HandleGenerationStatus;
             generator.OnGenerationComplete += HandleGenerationComplete;
             generator.OnGenerationFailed += HandleGenerationFailed;
 
@@ -257,6 +262,11 @@ namespace GemmaQuiz.Quiz
         private void HandleProgress(float progress)
         {
             loadingRealProgress = progress;
+        }
+
+        private void HandleGenerationStatus(string status)
+        {
+            hostGenerationStatus = status ?? "";
         }
 
         private void HandleGenerationComplete(QuizQuestionSet questionSet)
@@ -342,8 +352,10 @@ namespace GemmaQuiz.Quiz
             if (generator == null) return;
 
             generator.OnGenerationProgress -= HandleProgress;
+            generator.OnStatusChanged -= HandleGenerationStatus;
             generator.OnGenerationComplete -= HandleGenerationComplete;
             generator.OnGenerationFailed -= HandleGenerationFailed;
+            hostGenerationStatus = "";
         }
 
         private void OnDestroy()

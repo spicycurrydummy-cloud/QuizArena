@@ -51,20 +51,20 @@ namespace GemmaQuiz.AI
         [Header("Inception (Mercury) Settings")]
         [SerializeField] private string inceptionUrl = "https://api.inceptionlabs.ai/v1";
         [SerializeField] private string inceptionModel = DefaultInceptionModel;
-        [Tooltip("instant / low / medium / high (Mercury 3)")]
-        [SerializeField] private string inceptionReasoningEffort = "medium";
+        [Tooltip("instant / low / medium / high (Mercury 3)。medium 以上は推論だけで数千トークン使うので low 推奨")]
+        [SerializeField] private string inceptionReasoningEffort = "low";
 
         // APIキーは Config.json から読み込む (AIConfig 参照)。Inspector値は空でなければ上書きとして使う。
         [SerializeField] private string inceptionApiKey = "";
 
         [Header("Fallback: Cerebras")]
         [SerializeField] private string cerebrasUrl = "https://api.cerebras.ai/v1";
-        [SerializeField] private string cerebrasModel = "llama3.1-8b";
+        [SerializeField] private string cerebrasModel = "gpt-oss-120b";
         [SerializeField] private string cerebrasApiKey = "";
 
-        [Header("Fallback: Groq (Llama)")]
+        [Header("Fallback: Groq")]
         [SerializeField] private string groqUrl = "https://api.groq.com/openai/v1";
-        [SerializeField] private string groqModel = "llama-3.3-70b-versatile";
+        [SerializeField] private string groqModel = "openai/gpt-oss-120b";
         [SerializeField] private string groqApiKey = "";
 
         [Header("Fallback: Gemini Flash")]
@@ -86,14 +86,42 @@ namespace GemmaQuiz.AI
         [SerializeField] private int maxRetries = 4;
         [SerializeField] private int fallbackRetries = 2;
 
-        [Header("Validation")]
-        [SerializeField] private bool enableValidationPass = false;
+        [Header("Wikipedia Material (無料・キー不要)")]
+        [Tooltip("題材になる記事の冒頭要約を日本語版Wikipediaから取得してプロンプトに添える (出題の多様性と正確さを上げる)")]
+        [SerializeField] private bool useWikipediaMaterial = true;
+        [Tooltip("1ラウンドで集める記事数 (Wikipedia へのリクエストは記事数に関わらず 1〜2 回)")]
+        [Range(3, 20)] [SerializeField] private int materialTopicCount = 8;
+        [Tooltip("1記事あたりの要約文字数")]
+        [Range(100, 1200)] [SerializeField] private int materialMaxChars = 400;
+        [Tooltip("題材タイトルの列挙に使う reasoning_effort (Mercury)。instant が最速")]
+        [SerializeField] private string materialReasoningEffort = "instant";
+
+        [Header("Answer Verification (Gemini + Google検索, 無料枠 500回/日)")]
+        [Tooltip("生成した問題の正解を Gemini の Google検索グラウンディングで裏取りし、誤り/不確かな問題を除外する (Gemini キーが必要)")]
+        [SerializeField] private bool verifyWithSearch = true;
 
         private IQuizAIClient client;
         private string clientLabel = "primary";
         private readonly List<IQuizAIClient> fallbackClients = new();
         private readonly List<string> fallbackLabels = new();
         private readonly System.Random rng = new();
+
+        // 題材タイトル列挙用の軽量クライアント (温度高め・短い出力)
+        private IQuizAIClient materialClient;
+        // 正解の裏取り用 (Google検索グラウンディングは Gemini 専用)
+        private GeminiClient verifier;
+        private float verifierPausedUntil = -1f;
+        private const float VerifierPauseSec = 600f;
+
+        // 同じ記事を題材に使い回さないための履歴 (直近 UsedTitleMemory 件)
+        private readonly Queue<string> usedTitles = new();
+        private readonly HashSet<string> usedTitleSet = new();
+        private const int UsedTitleMemory = 80;
+
+        private delegate string PromptFactory(string material, IList<string> avoidQuestions);
+
+        private const string TitlesSchema =
+            "{\"type\":\"object\",\"properties\":{\"titles\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"titles\"]}";
 
         // Structured Output 用の JSON Schema (対応プロバイダーではこの形に強制される)
         private const string QuizSchema =
@@ -107,6 +135,10 @@ namespace GemmaQuiz.AI
 
         public bool IsGenerating { get; private set; }
         public QuizQuestionSet LastGeneratedQuestions { get; private set; }
+
+        /// <summary>生成中の工程 (題材収集 / 生成 / 検証) を表す短い文。ローディング画面の補足表示用。</summary>
+        public string StatusText { get; private set; } = "";
+        public event Action<string> OnStatusChanged;
 
         // 事前生成キャッシュ: エンコード済みジャンル値 → 問題セット
         private readonly Dictionary<int, QuizQuestionSet> preGeneratedCache = new();
@@ -143,10 +175,13 @@ namespace GemmaQuiz.AI
                     if (string.IsNullOrEmpty(inceptionKey))
                         Debug.LogError("[QuizGenerator] Inception API key not found. Put it in UserSettings/Config.json (editor) or Resources/Config.json (build).");
                     var model = string.IsNullOrWhiteSpace(inceptionModel) ? DefaultInceptionModel : inceptionModel.Trim();
-                    // reasoning トークンも max_tokens に含まれるので余裕を持たせる (Mercury 3 は最大 131k 出力可)
-                    int maxTokens = inceptionReasoningEffort == "high" ? 8192 : 6144;
+                    // reasoning トークンも max_tokens に含まれる (実測: low で 2.4k〜7.2k、medium は 8k 超) ので、切れて壊れた出力にならないよう effort ごとに大きめに取る
+                    int maxTokens = InceptionMaxTokens(inceptionReasoningEffort);
+                    // Mercury 3 は json_schema(strict) だと推論が 8k トークンまで肥大化して壊れた配列を返す (実測 2/3 失敗) ので json_object を使う
                     client = new OpenAIChatClient(inceptionKey, inceptionUrl, model, temperature, maxTokens,
-                        "Inception", inceptionReasoningEffort, supportsJsonSchema: true);
+                        "Inception", inceptionReasoningEffort, supportsJsonSchema: false);
+                    materialClient = new OpenAIChatClient(inceptionKey, inceptionUrl, model, 0.9f, 1024,
+                        "Inception", materialReasoningEffort, supportsJsonSchema: false);
                     clientLabel = $"Inception({model})";
                     Debug.Log($"[QuizGenerator] Using Inception (model: {model}, reasoning: {inceptionReasoningEffort})");
                     break;
@@ -154,11 +189,13 @@ namespace GemmaQuiz.AI
                     if (string.IsNullOrEmpty(geminiKey))
                         Debug.LogError("[QuizGenerator] Gemini API key not found. Put it in UserSettings/Config.json (editor) or Resources/Config.json (build).");
                     client = new GeminiClient(geminiKey, geminiModel, temperature);
+                    materialClient = new GeminiClient(geminiKey, geminiModel, 0.9f);
                     clientLabel = $"Gemini({geminiModel})";
                     Debug.Log($"[QuizGenerator] Using Gemini (model: {geminiModel})");
                     break;
                 default:
                     client = new OllamaClient(ollamaUrl, ollamaModel, temperature);
+                    materialClient = new OllamaClient(ollamaUrl, ollamaModel, 0.9f);
                     clientLabel = $"Ollama({ollamaModel})";
                     Debug.Log($"[QuizGenerator] Using Ollama (model: {ollamaModel})");
                     break;
@@ -168,14 +205,15 @@ namespace GemmaQuiz.AI
             fallbackClients.Clear();
             fallbackLabels.Clear();
 
+            // gpt-oss 系は reasoning モデルなので推論は low に抑え、出力枠は推論込みで確保する
             if (!string.IsNullOrEmpty(cerebrasKey))
             {
-                fallbackClients.Add(new OpenAIChatClient(cerebrasKey, cerebrasUrl, cerebrasModel, temperature, 4096, "Cerebras"));
+                fallbackClients.Add(new OpenAIChatClient(cerebrasKey, cerebrasUrl, cerebrasModel, temperature, 8192, "Cerebras", "low"));
                 fallbackLabels.Add($"Cerebras({cerebrasModel})");
             }
             if (!string.IsNullOrEmpty(groqKey))
             {
-                fallbackClients.Add(new OpenAIChatClient(groqKey, groqUrl, groqModel, temperature, 4096, "Groq"));
+                fallbackClients.Add(new OpenAIChatClient(groqKey, groqUrl, groqModel, temperature, 8192, "Groq", "low"));
                 fallbackLabels.Add($"Groq({groqModel})");
             }
             if (aiProvider != AIProvider.Gemini && !string.IsNullOrEmpty(geminiKey))
@@ -187,9 +225,24 @@ namespace GemmaQuiz.AI
             Debug.Log(fallbackClients.Count > 0
                 ? $"[QuizGenerator] Fallback chain armed: {string.Join(" → ", fallbackLabels)}"
                 : "[QuizGenerator] No fallback clients configured.");
+
+            // 正解の裏取り (Google検索グラウンディング) は Gemini 専用機能なので Gemini キーがあるときだけ有効
+            verifier = string.IsNullOrEmpty(geminiKey) ? null : new GeminiClient(geminiKey, geminiModel, 0.1f);
+            if (verifyWithSearch && verifier == null)
+                Debug.LogWarning("[QuizGenerator] verifyWithSearch is on but no Gemini API key is configured: answers will not be verified.");
+            Debug.Log($"[QuizGenerator] Wikipedia material: {(useWikipediaMaterial ? "on" : "off")}, " +
+                      $"search verification: {(verifyWithSearch && verifier != null ? geminiModel : "off")}");
         }
 
         private static string FirstNonEmpty(string a, string b) => string.IsNullOrEmpty(a) ? b : a;
+
+        private static int InceptionMaxTokens(string effort) => (effort ?? "").Trim().ToLowerInvariant() switch
+        {
+            "instant" => 4096,
+            "low" => 16384,
+            "medium" => 24576,
+            _ => 32768
+        };
 
         /// <summary>
         /// 事前生成キャッシュにある問題を取り出す (取り出した時点でキャッシュから消える)。なければnull。
@@ -218,12 +271,22 @@ namespace GemmaQuiz.AI
 
             try
             {
-                var prompt = QuizPromptBuilder.Build(genre, subGenreIndex, questionsPerGenre);
-                var responseJson = await client.GenerateAsync(prompt, QuizSchema);
-                var questionSet = ParseResponse(responseJson);
-                PostProcess(questionSet);
-                preGeneratedCache[encoded] = questionSet;
-                Debug.Log($"[QuizGenerator] Pre-generation complete for {displayName} ({questionSet.questions.Count}問)");
+                // 本番と同じパイプライン (題材収集 → 生成 → 検証) だが、進捗/状態は表示しない
+                string material = await GatherMaterialAsync(
+                    QuizPromptBuilder.DescribeScope(genre, subGenreIndex),
+                    QuizPromptBuilder.SearchKeyword(genre, subGenreIndex), quiet: true);
+                var result = await TryGenerateWithClient(client, material,
+                    (m, avoid) => QuizPromptBuilder.Build(genre, subGenreIndex, questionsPerGenre, m, avoid),
+                    2, clientLabel, quiet: true);
+                if (result.Success)
+                {
+                    preGeneratedCache[encoded] = result.QuestionSet;
+                    Debug.Log($"[QuizGenerator] Pre-generation complete for {displayName} ({result.QuestionSet.questions.Count}問)");
+                }
+                else
+                {
+                    Debug.LogWarning($"[QuizGenerator] Pre-generation failed for {displayName}: {result.ErrorMessage}");
+                }
             }
             catch (Exception e)
             {
@@ -243,7 +306,9 @@ namespace GemmaQuiz.AI
             int encoded = GenreEncoding.Encode((int)genre, subGenreIndex);
             var displayName = GenreEncoding.GetDisplayName((int)genre, subGenreIndex);
             GenerateQuestionsInternal(encoded, displayName,
-                () => QuizPromptBuilder.Build(genre, subGenreIndex, questionsPerGenre));
+                QuizPromptBuilder.DescribeScope(genre, subGenreIndex),
+                QuizPromptBuilder.SearchKeyword(genre, subGenreIndex),
+                (material, avoid) => QuizPromptBuilder.Build(genre, subGenreIndex, questionsPerGenre, material, avoid));
         }
 
         /// <summary>
@@ -253,10 +318,12 @@ namespace GemmaQuiz.AI
         {
             int encoded = GenreEncoding.CUSTOM_GENRE_CODE * 100;
             GenerateQuestionsInternal(encoded, customGenreName,
-                () => QuizPromptBuilder.BuildCustom(customGenreName, questionsPerGenre));
+                $"the topic \"{customGenreName}\"", customGenreName,
+                (material, avoid) => QuizPromptBuilder.BuildCustom(customGenreName, questionsPerGenre, material, avoid));
         }
 
-        private async void GenerateQuestionsInternal(int encodedGenre, string displayName, Func<string> buildPrompt)
+        private async void GenerateQuestionsInternal(int encodedGenre, string displayName,
+            string scopeDescription, string searchKeyword, PromptFactory buildPrompt)
         {
             if (IsGenerating)
             {
@@ -275,7 +342,11 @@ namespace GemmaQuiz.AI
             OnGenerationProgress?.Invoke(0f);
             Debug.Log($"[QuizGenerator] Generating {questionsPerGenre} questions for: {displayName}");
 
-            var result = await TryGenerateWithClient(client, buildPrompt, maxRetries, clientLabel);
+            // 題材は全プロバイダーで共用 (失敗しても null で続行)
+            string material = await GatherMaterialAsync(scopeDescription, searchKeyword, quiet: false);
+            OnGenerationProgress?.Invoke(0.1f);
+
+            var result = await TryGenerateWithClient(client, material, buildPrompt, maxRetries, clientLabel);
             string lastError = result.ErrorMessage;
 
             for (int i = 0; !result.Success && i < fallbackClients.Count; i++)
@@ -283,7 +354,7 @@ namespace GemmaQuiz.AI
                 var label = fallbackLabels[i];
                 Debug.LogWarning($"[QuizGenerator] Trying fallback {i + 1}/{fallbackClients.Count}: {label} (last error: {lastError})");
                 OnGenerationProgress?.Invoke(0.1f);
-                result = await TryGenerateWithClient(fallbackClients[i], buildPrompt, fallbackRetries, label);
+                result = await TryGenerateWithClient(fallbackClients[i], material, buildPrompt, fallbackRetries, label);
                 if (!result.Success) lastError = result.ErrorMessage;
             }
 
@@ -295,6 +366,7 @@ namespace GemmaQuiz.AI
 
             Debug.LogError($"[QuizGenerator] All providers failed. Last error: {lastError}");
             IsGenerating = false;
+            SetStatus("");
             OnGenerationFailed?.Invoke($"問題の生成に失敗しました: {lastError}");
         }
 
@@ -302,6 +374,7 @@ namespace GemmaQuiz.AI
         {
             LastGeneratedQuestions = questionSet;
             IsGenerating = false;
+            SetStatus("");
             OnGenerationProgress?.Invoke(1f);
             Debug.Log($"[QuizGenerator] Successfully generated {questionSet.questions.Count} questions");
             OnGenerationComplete?.Invoke(questionSet);
@@ -318,9 +391,12 @@ namespace GemmaQuiz.AI
         /// 1クライアントで最大 attempts 回生成を試みる。
         /// 問題数が足りない応答は捨てずに蓄積し、合計が規定数に達した時点で成功とする
         /// (LLMが 3/5 問しか返さないケースで丸ごと捨てて再生成するより速くて安い)。
+        /// 各試行の結果は Google検索で裏取りしてから蓄積するので、検証で落ちた分も次の試行で補充される。
+        /// quiet=true (事前生成) のときは進捗イベント/状態文を出さない。
         /// </summary>
         private async Task<GenerationAttemptResult> TryGenerateWithClient(
-            IQuizAIClient targetClient, Func<string> buildPrompt, int attempts, string label)
+            IQuizAIClient targetClient, string material, PromptFactory buildPrompt, int attempts, string label,
+            bool quiet = false)
         {
             string lastError = "unknown";
             var accumulated = new QuizQuestionSet { questions = new List<QuizQuestion>() };
@@ -331,29 +407,29 @@ namespace GemmaQuiz.AI
             {
                 try
                 {
-                    OnGenerationProgress?.Invoke(0.15f + 0.35f * accumulated.questions.Count / Mathf.Max(1, questionsPerGenre));
-                    var responseJson = await targetClient.GenerateAsync(buildPrompt(), QuizSchema);
+                    int have = accumulated.questions.Count;
+                    if (!quiet)
+                    {
+                        OnGenerationProgress?.Invoke(0.15f + 0.35f * have / Mathf.Max(1, questionsPerGenre));
+                        SetStatus(have == 0 ? "問題を生成中..." : $"不足分を追加生成中 ({have}/{questionsPerGenre})...");
+                    }
+
+                    // 2回目以降は既出の問題文を渡して同じ問題の再生成を避ける
+                    var avoid = have > 0 ? accumulated.questions.ConvertAll(q => q.question) : null;
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var responseJson = await targetClient.GenerateAsync(buildPrompt(material, avoid), QuizSchema);
+                    double genSec = sw.Elapsed.TotalSeconds;
                     var questionSet = ParseResponse(responseJson);
 
-                    if (enableValidationPass)
-                    {
-                        Debug.Log("[QuizGenerator] Running validation pass...");
-                        var validatedJson = await targetClient.GenerateAsync(QuizPromptBuilder.BuildValidation(responseJson), QuizSchema);
-                        try
-                        {
-                            questionSet = ParseResponse(validatedJson);
-                        }
-                        catch (Exception ve)
-                        {
-                            Debug.LogWarning($"[QuizGenerator] Validation pass unusable, using original: {ve.Message}");
-                        }
-                    }
+                    // Google検索で正解を裏取り (誤り/不確かな問題はここで落とす)
+                    await VerifyWithSearchAsync(questionSet, label, quiet);
 
                     // 同じ問題文は重複として捨てつつ蓄積
                     int added = 0;
                     foreach (var q in questionSet.questions)
                     {
                         if (q == null || string.IsNullOrWhiteSpace(q.question)) continue;
+                        if (QuizPromptBuilder.IsExampleQuestion(q.question)) { Debug.LogWarning($"[QuizGenerator] 例題の流用を除外: {q.question}"); continue; }
                         if (!seenQuestions.Add(q.question.Trim())) continue;
                         accumulated.questions.Add(q);
                         added++;
@@ -361,11 +437,20 @@ namespace GemmaQuiz.AI
                     }
 
                     int count = accumulated.questions.Count;
+                    if (added == 0)
+                    {
+                        // JSONとしては読めたが使える問題が無い (出力切断・構造崩れ) → 原因が追えるよう先頭だけ残す
+                        int head = Mathf.Min(200, responseJson.Length);
+                        Debug.LogWarning($"[QuizGenerator][{label}] No usable question in response ({responseJson.Length} chars): {responseJson.Substring(0, head)}");
+                    }
                     if (count >= questionsPerGenre)
+                    {
+                        Debug.Log($"[QuizGenerator][{label}] Attempt {attempt}/{attempts}: +{added}問 → {count}/{questionsPerGenre} (生成 {genSec:0.0}s)");
                         break;
+                    }
 
                     lastError = $"問題数が規定未達 ({count}/{questionsPerGenre})";
-                    Debug.LogWarning($"[QuizGenerator][{label}] Attempt {attempt}/{attempts}: +{added}問 (累計 {count}/{questionsPerGenre})" +
+                    Debug.LogWarning($"[QuizGenerator][{label}] Attempt {attempt}/{attempts}: +{added}問 (累計 {count}/{questionsPerGenre}, 生成 {genSec:0.0}s)" +
                                      (attempt < attempts ? " - 不足分を追加生成" : ""));
                 }
                 catch (Exception e)
@@ -393,7 +478,11 @@ namespace GemmaQuiz.AI
 
             try
             {
-                OnGenerationProgress?.Invoke(0.6f);
+                if (!quiet)
+                {
+                    OnGenerationProgress?.Invoke(0.6f);
+                    SetStatus("問題を整形中...");
+                }
                 PostProcess(accumulated);
                 return new GenerationAttemptResult { Success = true, QuestionSet = accumulated };
             }
@@ -420,6 +509,314 @@ namespace GemmaQuiz.AI
             if (m.Contains("insufficient") && (m.Contains("credit") || m.Contains("balance"))) return true;
             return false;
         }
+
+        private void SetStatus(string text, bool quiet = false)
+        {
+            if (quiet) return;
+            StatusText = text ?? "";
+            OnStatusChanged?.Invoke(StatusText);
+        }
+
+        // ===== 題材収集 (Wikipedia) =====
+
+        /// <summary>
+        /// 題材となる記事の要約を集めてプロンプト用のテキストにする。
+        /// LLM にタイトルを列挙させ → Wikipedia から冒頭要約をまとめて取得 (1リクエスト)。
+        /// タイトルが解決できなければ全文検索でフォールバック (もう1リクエスト)。失敗時は null (題材なしで生成)。
+        /// </summary>
+        private async Task<string> GatherMaterialAsync(string scopeDescription, string searchKeyword, bool quiet)
+        {
+            if (!useWikipediaMaterial || materialClient == null) return null;
+            SetStatus("題材を集めています (Wikipedia)...", quiet);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            var extracts = new List<WikipediaClient.Extract>();
+            try
+            {
+                var titles = await ProposeTopicTitlesAsync(scopeDescription);
+                if (titles.Count > 0)
+                    extracts.AddRange(await WikipediaClient.FetchExtractsAsync(titles, materialMaxChars));
+
+                if (extracts.Count < Mathf.Min(3, materialTopicCount))
+                {
+                    Debug.Log($"[QuizGenerator] Only {extracts.Count} titles resolved on Wikipedia, falling back to search: {searchKeyword}");
+                    foreach (var e in await WikipediaClient.SearchExtractsAsync(searchKeyword, materialTopicCount, materialMaxChars))
+                    {
+                        if (!extracts.Exists(x => x.title == e.title)) extracts.Add(e);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[QuizGenerator] Wikipedia material unavailable, generating without it: {e.Message}");
+            }
+
+            // 直近のラウンドで使った記事は避ける (全部被っていたら仕方なく使う)
+            var fresh = extracts.FindAll(x => !usedTitleSet.Contains(x.title));
+            if (fresh.Count >= 3) extracts = fresh;
+            if (extracts.Count > materialTopicCount) extracts.RemoveRange(materialTopicCount, extracts.Count - materialTopicCount);
+            if (extracts.Count == 0) return null;
+
+            RememberTitles(extracts);
+
+            var sb = new StringBuilder(extracts.Count * (materialMaxChars + 32));
+            for (int i = 0; i < extracts.Count; i++)
+            {
+                sb.Append('[').Append(i + 1).Append("] ").Append(extracts[i].title).Append('\n')
+                  .Append(extracts[i].extract).Append("\n\n");
+            }
+            Debug.Log($"[QuizGenerator] Wikipedia material: {extracts.Count} articles in {sw.Elapsed.TotalSeconds:0.0}s — {string.Join(", ", extracts.ConvertAll(x => x.title))}");
+            return sb.ToString().TrimEnd();
+        }
+
+        private async Task<List<string>> ProposeTopicTitlesAsync(string scopeDescription)
+        {
+            var prompt = QuizPromptBuilder.BuildTopicTitles(scopeDescription, materialTopicCount, usedTitles, rng.Next(1000, 9999));
+            var json = await materialClient.GenerateAsync(prompt, TitlesSchema);
+            var titles = ParseTitles(json);
+            if (titles.Count == 0)
+                Debug.LogWarning($"[QuizGenerator] Topic list unusable: {(json.Length > 200 ? json.Substring(0, 200) : json)}");
+            return titles;
+        }
+
+        private static List<string> ParseTitles(string json)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(json)) return result;
+
+            string cleaned = CleanJson(json);
+            TitleList list = TryParse<TitleList>(cleaned);
+            if (list?.titles == null)
+            {
+                int s = cleaned.IndexOf('[');
+                int e = cleaned.LastIndexOf(']');
+                if (s >= 0 && e > s)
+                    list = TryParse<TitleList>("{\"titles\":" + cleaned.Substring(s, e - s + 1) + "}");
+            }
+            if (list?.titles == null) return result;
+
+            foreach (var t in list.titles)
+            {
+                if (!string.IsNullOrWhiteSpace(t)) result.Add(t.Trim());
+            }
+            return result;
+        }
+
+        private void RememberTitles(List<WikipediaClient.Extract> extracts)
+        {
+            foreach (var e in extracts)
+            {
+                if (!usedTitleSet.Add(e.title)) continue;
+                usedTitles.Enqueue(e.title);
+                while (usedTitles.Count > UsedTitleMemory)
+                    usedTitleSet.Remove(usedTitles.Dequeue());
+            }
+        }
+
+        // ===== 正解の裏取り (Gemini + Google検索) =====
+
+        /// <summary>
+        /// 生成直後の問題 (answer/wrongs 形式) を Google検索グラウンディング付きの Gemini に検証させ、
+        /// 正解が「誤り」「不確か」と判定された問題を除外する (足りない分は次の試行で補充される)。
+        /// 検証側の正答案で自動修正はしない: 問題文の条件 (「日本の物理学者」等) を読み違えた誤修正が実測で出たため。
+        /// 検証自体が失敗した場合は未検証のまま通す (ゲーム進行を止めない)。
+        /// </summary>
+        private async Task VerifyWithSearchAsync(QuizQuestionSet questionSet, string label, bool quiet)
+        {
+            if (!verifyWithSearch || verifier == null || questionSet?.questions == null || questionSet.questions.Count == 0) return;
+            if (Time.realtimeSinceStartup < verifierPausedUntil) return;
+
+            var items = new List<(int id, string question, string answer, string[] wrongs)>();
+            var itemQuestions = new List<QuizQuestion>();
+            foreach (var q in questionSet.questions)
+            {
+                if (q == null || !TryGetAnswerAndWrongs(q, out var answer, out var wrongs)) continue;
+                items.Add((items.Count + 1, q.question, answer, wrongs));
+                itemQuestions.Add(q);
+            }
+            if (items.Count == 0) return;
+
+            SetStatus($"正解を検索で確認中 ({items.Count}問)...", quiet);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            VerifyResponse parsed;
+            string text = null;
+            try
+            {
+                text = await verifier.GenerateGroundedAsync(QuizPromptBuilder.BuildSearchVerification(items));
+                parsed = ParseVerification(text);
+                if (parsed?.results == null && !string.IsNullOrWhiteSpace(text))
+                {
+                    // 検索付き応答は番号付きリストや自由文で返ることがある → JSONモード (検索なし・追加1リクエスト) で整形し直す
+                    Debug.Log($"[QuizGenerator][{label}] Verification text is not JSON, restructuring via JSON mode. Head: {text.Substring(0, Mathf.Min(120, text.Length))}");
+                    var structured = await verifier.GenerateAsync(QuizPromptBuilder.BuildVerificationToJson(text, items.Count), VerifySchema);
+                    parsed = ParseVerification(structured);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[QuizGenerator][{label}] Search verification skipped: {e.Message}");
+                if (IsNonRetryableError(e.Message))
+                {
+                    verifierPausedUntil = Time.realtimeSinceStartup + VerifierPauseSec;
+                    Debug.LogWarning($"[QuizGenerator] Verifier paused for {VerifierPauseSec / 60:0} min (quota / rate limit).");
+                }
+                return;
+            }
+
+            if (parsed?.results == null)
+            {
+                int head = Mathf.Min(300, text?.Length ?? 0);
+                Debug.LogWarning($"[QuizGenerator][{label}] Search verification returned no parsable results; keeping questions unverified. Text head: {text?.Substring(0, head)}");
+                return;
+            }
+
+            int ok = 0, dropped = 0;
+            var toRemove = new HashSet<QuizQuestion>();
+            foreach (var r in parsed.results)
+            {
+                if (r == null || r.id < 1 || r.id > itemQuestions.Count) continue;
+                var q = itemQuestions[r.id - 1];
+                string givenAnswer = items[r.id - 1].answer;
+                string verdict = (r.verdict ?? "").Trim().ToLowerInvariant();
+
+                // "wrong" なのに正答案が元の正解と同じ = 実質 ok (Gemini がこの形で返すことが実測で何度もあった)
+                if (verdict == "wrong" && SameAnswer(r.correct_answer, givenAnswer))
+                    verdict = "ok";
+
+                if (verdict == "ok")
+                {
+                    ok++;
+                    continue;
+                }
+                toRemove.Add(q);
+                dropped++;
+                string hint = string.IsNullOrWhiteSpace(r.correct_answer) ? "" : $" / 検証側の正答案『{r.correct_answer}』";
+                Debug.LogWarning($"[QuizGenerator] 検証で除外 ({verdict}): 『{q.question}』 正解『{givenAnswer}』 {r.note}{hint}");
+            }
+
+            if (toRemove.Count > 0)
+                questionSet.questions.RemoveAll(toRemove.Contains);
+
+            Debug.Log($"[QuizGenerator][{label}] Search verification in {sw.Elapsed.TotalSeconds:0.0}s: ok={ok}, dropped={dropped}, unlisted={items.Count - ok - dropped}");
+
+            static bool SameAnswer(string a, string b)
+            {
+                if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+                return Norm(a) == Norm(b);
+                static string Norm(string s) => s.Trim().ToLowerInvariant().Replace(" ", "").Replace("　", "");
+            }
+        }
+
+        private static VerifyResponse ParseVerification(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            string cleaned = CleanJson(text);
+            var parsed = TryParse<VerifyResponse>(cleaned);
+            if (parsed?.results != null) return parsed;
+
+            // results を省いて配列だけ返してきた場合
+            if (cleaned.TrimStart().StartsWith("["))
+            {
+                parsed = TryParse<VerifyResponse>("{\"results\":" + cleaned + "}");
+                if (parsed?.results != null) return parsed;
+            }
+
+            // 前後に説明文が付いた場合: 最初の { から最後の } までを切り出す
+            int s = cleaned.IndexOf('{');
+            int e = cleaned.LastIndexOf('}');
+            if (s >= 0 && e > s)
+            {
+                parsed = TryParse<VerifyResponse>(cleaned.Substring(s, e - s + 1));
+                if (parsed?.results != null) return parsed;
+            }
+
+            // "1. {...}\n2. {...}" のように番号付きで個別オブジェクトを並べてきた場合: { } を拾い集めて配列にする
+            var objects = ExtractTopLevelObjects(cleaned);
+            if (objects.Count > 0)
+            {
+                parsed = TryParse<VerifyResponse>("{\"results\":[" + string.Join(",", objects) + "]}");
+                if (parsed?.results != null) return parsed;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// テキスト中の最上位 { ... } オブジェクトを (文字列リテラル内の括弧を無視して) 順に切り出す。
+        /// </summary>
+        private static List<string> ExtractTopLevelObjects(string s)
+        {
+            var result = new List<string>();
+            int i = 0;
+            while (i < s.Length)
+            {
+                while (i < s.Length && s[i] != '{') i++;
+                if (i >= s.Length) break;
+
+                int start = i, depth = 0, end = -1;
+                bool inString = false, escape = false;
+                for (; i < s.Length; i++)
+                {
+                    char c = s[i];
+                    if (escape) { escape = false; continue; }
+                    if (c == '\\') { escape = true; continue; }
+                    if (c == '"') { inString = !inString; continue; }
+                    if (inString) continue;
+                    if (c == '{') depth++;
+                    else if (c == '}' && --depth == 0) { end = i; break; }
+                }
+                if (end < 0) break;
+                result.Add(s.Substring(start, end - start + 1));
+                i = end + 1;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 生成直後の問題から (正解, 誤答3つ) を取り出す。answer/wrongs 形式と choices/correct_index 形式の両対応。
+        /// </summary>
+        private static bool TryGetAnswerAndWrongs(QuizQuestion q, out string answer, out string[] wrongs)
+        {
+            answer = null;
+            wrongs = null;
+            if (string.IsNullOrWhiteSpace(q.question)) return false;
+
+            if (!string.IsNullOrEmpty(q.answer) && q.wrongs != null && q.wrongs.Length >= 3)
+            {
+                answer = q.answer;
+                wrongs = new[] { q.wrongs[0], q.wrongs[1], q.wrongs[2] };
+                return true;
+            }
+            if (q.choices != null && q.choices.Length == 4 && q.correct_index >= 0 && q.correct_index < 4)
+            {
+                answer = q.choices[q.correct_index];
+                var list = new List<string>(3);
+                for (int i = 0; i < 4; i++)
+                    if (i != q.correct_index) list.Add(q.choices[i]);
+                wrongs = list.ToArray();
+                return true;
+            }
+            return false;
+        }
+
+        private static T TryParse<T>(string json) where T : class
+        {
+            try { return JsonUtility.FromJson<T>(json); }
+            catch { return null; }
+        }
+
+        [Serializable] private class TitleList { public string[] titles; }
+        [Serializable] private class VerifyResponse { public VerifyItem[] results; }
+        [Serializable] private class VerifyItem { public int id; public string verdict; public string correct_answer; public string note; }
+
+        // 検証結果を JSON モードで整形し直すときのスキーマ (Gemini responseSchema)
+        private const string VerifySchema =
+            "{\"type\":\"object\",\"properties\":{\"results\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{" +
+            "\"id\":{\"type\":\"integer\"}," +
+            "\"verdict\":{\"type\":\"string\",\"enum\":[\"ok\",\"wrong\",\"unsure\"]}," +
+            "\"correct_answer\":{\"type\":\"string\"}," +
+            "\"note\":{\"type\":\"string\"}" +
+            "},\"required\":[\"id\",\"verdict\"]}}},\"required\":[\"results\"]}";
 
         // ===== 後処理 =====
 
@@ -583,6 +980,7 @@ namespace GemmaQuiz.AI
         private static string GetRejectReason(QuizQuestion q, HashSet<string> seen)
         {
             if (string.IsNullOrWhiteSpace(q.question)) return "問題文が空";
+            if (QuizPromptBuilder.IsExampleQuestion(q.question)) return "プロンプトの例題をそのまま流用";
             if (q.choices == null || q.choices.Length != 4) return $"選択肢が4つではない({q.choices?.Length ?? 0})";
             if (q.correct_index < 0 || q.correct_index > 3) return $"correct_index({q.correct_index})が範囲外";
 
